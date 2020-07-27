@@ -1,0 +1,6 @@
+pefile
+requests
+cryptography
+configparser
+asn1crypto
+scandir
