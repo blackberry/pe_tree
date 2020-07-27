@@ -1,0 +1,2 @@
+include *.md LICENSE
+recursive-include pe_tree *.py *.ico *.png
