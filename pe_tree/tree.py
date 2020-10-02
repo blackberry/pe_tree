@@ -30,9 +30,6 @@ import traceback
 # pefile <3
 import pefile
 
-if sys.version_info > (3,):
-    long = int
-
 # Cryptography imports
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
@@ -43,14 +40,6 @@ from asn1crypto import cms
 # Qt imports
 from PyQt5 import QtCore, QtWidgets
 
-# Captsone imports
-try:
-    import capstone
-
-    have_capstone  = True
-except ImportError:
-    have_capstone = False
-
 # PE Tree imports
 import pe_tree.form
 import pe_tree.qstandarditems
@@ -59,6 +48,9 @@ import pe_tree.utils
 import pe_tree.dump_pe
 import pe_tree.hash_pe
 import pe_tree.exceptions
+
+if sys.version_info > (3,):
+    long = int
 
 class PETreeSignals(QtCore.QObject):
     """PE Tree PyQt5 signals"""
@@ -76,20 +68,21 @@ class PETree(QtCore.QRunnable):
 
     If the dump option is enabled in the config then any in-memory PE files will be dumped automatically, with the imports rebuilt from
     the existing IAT (so addresses should be correct in IDA-view)x.
-    
+
     Args:
         form (pe_tree.form.PETreeForm): Main form
         filename (str): Path to PE file to map (or name of segment if image_base != 0)
         image_base (int): Image-base of PE to map (overrides filename)
         data (bytes): PE file data (overrides filename and image_base)
+        opaque (object, optional): Opaque pointer to an object to supply to runtime callbacks
 
     """
-    def __init__(self, form, filename, image_base, data=None):
+    def __init__(self, form, filename, image_base, data=None, opaque=None):
         super(PETree, self).__init__()
         self.form = form
         self.filename = filename
         self.image_base = image_base
-        self.runtime = form.runtime.signals
+        self.runtime = pe_tree.runtime.RuntimeSignals(form.runtime, opaque)
         self.loaded_from_idb = False
         self.pe = None
         self.data = data
@@ -133,57 +126,54 @@ class PETree(QtCore.QRunnable):
             if image_base == 0 and (filename and not os.path.isfile(filename)):
                 return
 
-            if not self.filename:
-                # Working from memory/IDB
-                filename = "{}-0x{:0{w}x}".format(self.runtime.get_segment_name(image_base), image_base, w=self.ptr_size)
-
+            if self.image_base > 0 and filename and not os.path.isfile(filename):
+                # Working from memory/supplied data
                 if self.data:
                     # Data already supplied
-                    self.size = len(self.data)
-                    data = self.data
                     self.dumped = True
                 else:
-                    # Calculate the size of the in-memory PE
-                    self.size = self.runtime.calc_pe_size(image_base)
-
-                    if self.size == 0:
-                        return
-
                     # Read PE data from memory
-                    data = self.runtime.get_bytes(image_base, self.size)
+                    self.data = self.runtime.read_pe(image_base)
 
-                if data == None:
+                if self.data is None:
                     return
+
+                # Length of PE file in bytes
+                self.size = len(self.data)
+
+                if not filename:
+                    filename = "{}-0x{:0{w}x}".format(self.runtime.get_segment_name(image_base), image_base, w=self.ptr_size)
+
+                self.signals.process_file.emit(filename)
 
                 # Parse PE file
                 try:
-                    self.signals.process_file.emit(filename)
-
-                    self.pe = pefile.PE(data=data)
-                except Exception:
+                    self.pe = pefile.PE(data=self.data)
+                except:
+                    self.signals.update_ui.emit(None)
                     return
-  
-                # Attempt to dump if enabled
-                if self.data == None and self.runtime.get_config_option("dump", "enable", True) != False:
+
+                self.org_data = self.data
+
+                # Attempt to automatically dump if enabled (for IDA Pro plugin only)
+                if not self.dumped and pe_tree.form.HAVE_IDA and self.runtime.get_config_option("dump", "enable", True):
                     # Re-initialise pefile based on dumped PE
                     try:
-                        self.org_data = data
-
                         pe_data = pe_tree.dump_pe.DumpPEFile(self.pe, self.image_base, self.size, self.runtime, recalculate_pe_checksum=self.runtime.get_config_option("dump", "recalculate_pe_checksum", False)).dump()
 
                         if pe_data:
                             self.pe = pefile.PE(data=pe_data)
 
-                            data = pe_data
+                            self.data = pe_data
 
                             self.dumped = True
                     except:
                         print(traceback.format_exc())
 
-                self.data = data
+                self.size = len(self.data)
 
                 # Hash PE data
-                pe_hashes = pe_tree.hash_pe.hash_pe_file(None, data=data, pe=self.pe, json_dumps=False)
+                pe_hashes = pe_tree.hash_pe.hash_pe_file(None, data=self.data, pe=self.pe, json_dumps=False)
 
                 self.loaded_from_idb = True
             else:
@@ -193,9 +183,14 @@ class PETree(QtCore.QRunnable):
 
                     self.pe = pefile.PE(filename)
                 except:
+                    self.signals.update_ui.emit(None)
                     return
 
                 self.size = os.path.getsize(filename)
+
+                if pe_tree.form.HAVE_IDA:
+                    # Read PE data from memory
+                    self.org_data = self.runtime.read_pe(image_base)
 
                 if self.form.processpool:
                     # Hash input file and calculate entropy in a separate process
@@ -204,9 +199,8 @@ class PETree(QtCore.QRunnable):
                     # Hash input file and calculate entropy
                     pe_hashes = pe_tree.hash_pe.hash_pe_file(filename, data=None, pe=self.pe, json_dumps=False)
 
-                # Use image base from optional header?
-                if image_base == 0:
-                    image_base = self.pe.OPTIONAL_HEADER.ImageBase
+                # Use image base from optional header
+                image_base = self.pe.OPTIONAL_HEADER.ImageBase
 
                 self.image_base = image_base
 
@@ -214,12 +208,13 @@ class PETree(QtCore.QRunnable):
 
             pe = self.pe
             self.filename = os.path.basename(filename)
+            self.disasm = self.runtime.init_capstone(pe)
 
             # Determine pointer size based on architecture (note, this is printable width for format())
             self.ptr_size = 16 if pe.FILE_HEADER.Machine == pefile.MACHINE_TYPE["IMAGE_FILE_MACHINE_AMD64"] else 8
 
             # Dump pefile information to output
-            if self.runtime.get_config_option("config", "debug", False) != False:
+            if self.runtime.get_config_option("config", "debug", False):
                 self.runtime.log(pe.dump_info())
 
             # Create the root nodes
@@ -234,7 +229,7 @@ class PETree(QtCore.QRunnable):
             except:
                 warnings = []
 
-            if self.dumped != False:
+            if self.dumped:
                 if not hasattr(pe, "DIRECTORY_ENTRY_IMPORT"):
                     if not hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
                         self.root_value_item = pe_tree.qstandarditems.WarningItem(self, name="Missing imports/exports", tooltip="\n".join(warnings))
@@ -284,7 +279,7 @@ class PETree(QtCore.QRunnable):
                     item["name"] += " MZ"
 
                 mz_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name=item["key"]), pe_tree.qstandarditems.PEFileItem(self, **item)])
-            
+
                 # Comment the structure in the IDB
                 self.comment_item(item)
 
@@ -318,7 +313,7 @@ class PETree(QtCore.QRunnable):
 
                 dos_item.appendRow([rich_header_item, pe_tree.qstandarditems.PEFileItem(self, name="")])
 
-                if self.form.compiler_ids != None:
+                if self.form.compiler_ids is not None:
                     tools = {}
 
                     # Parse value:count
@@ -354,20 +349,20 @@ class PETree(QtCore.QRunnable):
             # NT_HEADER
             nt_header_item = pe_tree.qstandarditems.HeaderItem(self, name="NT_HEADERS")
             self.regions.append(pe_tree.map.FileRegion("NT_HEADERS", item=nt_header_item, rva=image_base + pe.NT_HEADERS.get_file_offset(), start=pe.NT_HEADERS.get_file_offset(), size=pe.NT_HEADERS.sizeof()))
-        
+
             for item in self.dump(pe.NT_HEADERS):
                 if item["key"] == "Signature":
                     item["name"] += " PE"
                 nt_header_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name=item["key"]), pe_tree.qstandarditems.PEFileItem(self, **item)])
 
                 self.comment_item(item)
-        
+
             pe_item.appendRow([nt_header_item, pe_tree.qstandarditems.PEFileItem(self, name="")])
-        
+
             # FILE_HEADER
             file_header_item = pe_tree.qstandarditems.HeaderItem(self, name="FILE_HEADER")
             self.regions.append(pe_tree.map.FileRegion("FILE_HEADER", item=file_header_item, rva=image_base + pe.FILE_HEADER.get_file_offset(), start=pe.FILE_HEADER.get_file_offset(), size=pe.FILE_HEADER.sizeof()))
-        
+
             for item in self.dump(pe.FILE_HEADER):
                 if item["key"] == "Machine":
                     if pe.FILE_HEADER.Machine in pefile.MACHINE_TYPE:
@@ -378,11 +373,11 @@ class PETree(QtCore.QRunnable):
                         if val & pe.FILE_HEADER.Characteristics:
                             characteristics.append(name.replace("IMAGE_FILE_", ""))
                     item["name"] += " {}".format(" | ".join(characteristics))
-            
+
                 file_header_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name=item["key"]), pe_tree.qstandarditems.PEFileItem(self, **item)])
 
             nt_header_item.appendRow([file_header_item, pe_tree.qstandarditems.PEFileItem(self, name="")])
-        
+
             # OPTIONAL_HEADER
             optional_header_item = pe_tree.qstandarditems.HeaderItem(self, name="OPTIONAL_HEADER")
             self.regions.append(pe_tree.map.FileRegion("OPTIONAL_HEADER", item=optional_header_item, rva=image_base + pe.OPTIONAL_HEADER.get_file_offset(), start=pe.OPTIONAL_HEADER.get_file_offset(), size=pe.OPTIONAL_HEADER.sizeof()))
@@ -438,7 +433,7 @@ class PETree(QtCore.QRunnable):
 
             # DATA_DIRECTORY
             data_directory_item = pe_tree.qstandarditems.HeaderItem(self, name="DATA_DIRECTORY")
-            
+
             for entry in pe.OPTIONAL_HEADER.DATA_DIRECTORY:
                 if entry.VirtualAddress > 0:
                     directory_item = pe_tree.qstandarditems.HeaderItem(self, name=entry.name)
@@ -451,12 +446,12 @@ class PETree(QtCore.QRunnable):
                     directory_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name="Size"), pe_tree.qstandarditems.SizeItem(self, size=entry.Size, width=8)])
 
                     data_directory_item.appendRow([directory_item, pe_tree.qstandarditems.PEFileItem(self, name="")])
-                
+
             optional_header_item.appendRow([data_directory_item, pe_tree.qstandarditems.PEFileItem(self, name="")])
 
 
             nt_header_item.appendRow([optional_header_item, pe_tree.qstandarditems.PEFileItem(self, name="")])
-        
+
             # Sections
             if hasattr(pe, "sections") and len(pe.sections) > 0:
                 sections_item = pe_tree.qstandarditems.HeaderItem(self, name="IMAGE_SECTION_HEADER")
@@ -483,7 +478,7 @@ class PETree(QtCore.QRunnable):
                         if item["key"] == "Characteristics":
                             characteristics = []
                             for _item in section.__dict__:
-                                if _item.startswith("IMAGE_SCN_") and section.__dict__[_item] != False:
+                                if _item.startswith("IMAGE_SCN_") and section.__dict__[_item]:
                                     _item = _item.replace("IMAGE_SCN_CNT_", "").replace("IMAGE_SCN_MEM_", "").replace("IMAGE_SCN_", "")
                                     characteristics.append(_item)
 
@@ -501,9 +496,9 @@ class PETree(QtCore.QRunnable):
                     section_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name="SHA256"), pe_tree.qstandarditems.PEFileItem(self, name=section_hashes["sha256"])])
                     section_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name="MD5"), pe_tree.qstandarditems.PEFileItem(self, name=section_hashes["md5"], vt_query="section:\"{}\"")])
                     section_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name="Ratio"), pe_tree.qstandarditems.RatioItem(self, size=section.SizeOfRawData, offset=section.PointerToRawData, entropy=section_hashes["entropy"])])
-                        
+
                     sections_item.appendRow([section_item, pe_tree.qstandarditems.PEFileItem(self, name="", offset=section.VirtualAddress)])
-                
+
                 pe_item.appendRow([sections_item, pe_tree.qstandarditems.PEFileItem(self, name="")])
 
             # Imports
@@ -512,15 +507,15 @@ class PETree(QtCore.QRunnable):
 
                 for entry in pe.DIRECTORY_ENTRY_IMPORT:
                     dll_item = pe_tree.qstandarditems.HeaderItem(self, name=entry.dll, vt_query="imports:\"{}\"")
-                
+
                     for item in self.dump(entry.struct):
                         dll_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name=item["key"]), pe_tree.qstandarditems.PEFileItem(self, **item)])
-                
+
                     for imp in entry.imports:
                         name = imp.name
 
-                        if pe_tree.form.have_ida:
-                            if name == None:
+                        if pe_tree.form.HAVE_IDA:
+                            if name is None:
                                 # Ordinal import - get name from disassembly
                                 name = self.runtime.get_label(imp.address)
                             else:
@@ -541,7 +536,7 @@ class PETree(QtCore.QRunnable):
                                     # strip "32_" prefix
                                     if imp_name.find("32_") == 0:
                                         imp_name = imp_name[3:]
-    
+
                                     if self.ptr_size == 8:
                                         self.runtime.make_dword(imp.address)
                                     else:
@@ -558,16 +553,16 @@ class PETree(QtCore.QRunnable):
                         dll_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name=name, vt_query="imports:\"{}\""), pe_tree.qstandarditems.PEFileItem(self, name="0x{:0{w}x}".format(address, w=self.ptr_size), offset=address, valid_va=True)])
 
                     imports_item.appendRow([dll_item, pe_tree.qstandarditems.PEFileItem(self, name="")])
-                    
+
                 pe_item.appendRow([imports_item, pe_tree.qstandarditems.PEFileItem(self, name="")])
 
             # Exports
             if hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
                 exports_item = pe_tree.qstandarditems.HeaderItem(self, name="IMAGE_EXPORT_DESCRIPTOR")
-                
+
                 for item in self.dump(pe.DIRECTORY_ENTRY_EXPORT.struct):
                     exports_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name=item["key"]), pe_tree.qstandarditems.PEFileItem(self, **item)])
-        
+
                 dll_items = pe_tree.qstandarditems.HeaderItem(self, name=pe_tree.qstandarditems.PEFileString(pe.get_string_at_rva(pe.DIRECTORY_ENTRY_EXPORT.struct.Name)), vt_query="exports:\"{}\"")
 
                 for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols:
@@ -590,7 +585,7 @@ class PETree(QtCore.QRunnable):
                 exports_item.appendRow([dll_items, pe_tree.qstandarditems.PEFileItem(self, name="")])
 
                 pe_item.appendRow([exports_item, pe_tree.qstandarditems.PEFileItem(self, name="")])
-        
+
             # IMAGE_DIRECTORY_ENTRY_DEBUG
             if hasattr(pe, "DIRECTORY_ENTRY_DEBUG"):
                 debug_items = pe_tree.qstandarditems.HeaderItem(self, name="IMAGE_DIRECTORY_ENTRY_DEBUG")
@@ -652,7 +647,7 @@ class PETree(QtCore.QRunnable):
                     self.comment_item(item)
 
                 pe_item.appendRow([load_config_items, pe_tree.qstandarditems.PEFileItem(self, name="")])
-            
+
             # Resources
             resources_hashes_iter = iter(pe_hashes["resources"])
 
@@ -695,7 +690,7 @@ class PETree(QtCore.QRunnable):
                             else:
                                 name = "{} ({})".format(resource_id.struct.Id, lang_str)
                                 save_filename = "{}_{}_{}".format(entry_name, resource_id.struct.Id, lang_str)
-                    
+
                             next_item = pe_tree.qstandarditems.PEFileItem(self, name=name)
 
                             # Get resource
@@ -711,23 +706,23 @@ class PETree(QtCore.QRunnable):
                             # Attempt to draw icon
                             if resource_type.struct.Id == pefile.RESOURCE_TYPE["RT_ICON"]: #or resource_type.struct.Id == pefile.RESOURCE_TYPE["RT_GROUP_ICON"]:
                                 ext = "bin"
-                                if data != None and data != "":
+                                if data not in (None, ""):
                                     if data[1:4] == "PNG":
                                         ext = "png"
                                     else:
                                         ext = "bmp"
 
                                 value_item = pe_tree.qstandarditems.SaveableHeaderItem(self, name=name, filename=save_filename, ext=ext, data=data, offset=offset_to_data, size=size)
-                                value_item.setIcon(pe_tree.utils.QIcon_from_ICO_data(data))
+                                value_item.setIcon(pe_tree.utils.qicon_from_ico_data(data))
                             else:
                                 cyberchef_recipe = ""
                                 # Convert manifest to ASCII string
                                 if resource_type.struct.Id == pefile.RESOURCE_TYPE["RT_MANIFEST"]:
-                                    if pe_tree.form.have_ida:
+                                    if pe_tree.form.HAVE_IDA:
                                         self.runtime.make_string(image_base + offset, size)
                                     cyberchef_recipe = "XML_Beautify('%5C%5Ct')"
 
-                                value_item = pe_tree.qstandarditems.SaveableHeaderItem(self, name=name, filename=save_filename, offset=offset_to_data, size=size, cyberchef_recipe=cyberchef_recipe)                   
+                                value_item = pe_tree.qstandarditems.SaveableHeaderItem(self, name=name, filename=save_filename, offset=offset_to_data, size=size, cyberchef_recipe=cyberchef_recipe)
 
                             resource_hashes = next(resources_hashes_iter)
 
@@ -746,7 +741,7 @@ class PETree(QtCore.QRunnable):
                                     next_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name=resource_id.directory.strings[rt_string]), pe_tree.qstandarditems.PEFileItem(self, name="")])
 
                     resources_item.appendRow([resource_item, pe_tree.qstandarditems.PEFileItem(self, name="")])
-                    
+
                 pe_item.appendRow([resources_item, pe_tree.qstandarditems.PEFileItem(self, name="")])
 
             language_ids = {
@@ -844,13 +839,13 @@ class PETree(QtCore.QRunnable):
                                             values.append(code)
 
                                     versionifo_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name=pe_tree.qstandarditems.PEFileString(key)), pe_tree.qstandarditems.PEFileItem(self, name=", ".join(values))])
-                        
+
                 file_item.appendRow([versionifo_item, pe_tree.qstandarditems.PEFileItem(self, name="")])
 
             # Is overlay present?
             offset = pe.get_overlay_data_start_offset()
 
-            if offset != None:
+            if offset is not None:
                 data = pe.get_overlay()
 
                 # Certificate
@@ -877,7 +872,14 @@ class PETree(QtCore.QRunnable):
 
                     try:
                         # Load certificate/parse ASN.1
-                        signature = cms.ContentInfo.load(bytes(cert_data[8:]))
+                        try:
+                            signature = cms.ContentInfo.load(bytes(cert_data[8:]))
+                        except:
+                            # For some reason the overlay data sometimes contains 0x40 bytes of the final section?
+                            data = pe.get_overlay()
+                            cert_data = data[0x48:size + 0x48]
+                            data = data[size + 0x48:]
+                            signature = cms.ContentInfo.load(cert_data)
 
                         if signature:
                             # Iterate over certificates
@@ -932,25 +934,9 @@ class PETree(QtCore.QRunnable):
 
                     file_item.appendRow([overlay_item, pe_tree.qstandarditems.PEFileItem(self, name="")])
 
-            if have_capstone:
-                # Initialise capstone disassembler
-                mt = pefile.MACHINE_TYPE
-
-                if pe.FILE_HEADER.Machine == mt["IMAGE_FILE_MACHINE_I386"]:
-                    self.disasm = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
-                elif pe.FILE_HEADER.Machine == mt["IMAGE_FILE_MACHINE_AMD64"]:
-                    self.disasm = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
-                elif pe.FILE_HEADER.Machine == mt["IMAGE_FILE_MACHINE_ARM"]:
-                    self.disasm = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_ARM)
-                elif pe.FILE_HEADER.Machine == mt["IMAGE_FILE_MACHINE_POWERPC"]:
-                    self.disasm = capstone.Cs(capstone.CS_ARCH_PPC, capstone.CS_MODE_LITTLE_ENDIAN)
-                elif pe.FILE_HEADER.Machine in [mt["IMAGE_FILE_MACHINE_THUMB"], mt["IMAGE_FILE_MACHINE_ARMNT"]]:
-                    self.disasm = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB)
-                elif pe.FILE_HEADER.Machine in [mt["IMAGE_FILE_MACHINE_R3000"], mt["IMAGE_FILE_MACHINE_R4000"], mt["IMAGE_FILE_MACHINE_R10000"]]:
-                    self.disasm = capstone.Cs(capstone.CS_ARCH_MIPS, capstone.CS_MODE_MIPS32)
-
         except pe_tree.exceptions.ThreadStopping:
             # Stop event has been set, bail
+            self.signals.update_ui.emit(None)
             return
 
         except Exception as e:
@@ -965,12 +951,12 @@ class PETree(QtCore.QRunnable):
 
     def comment_item(self, item):
         """Convert item to correct type and comment in IDA
-        
+
         Args:
             item (object): pefile.PE structure item
-        
+
         """
-        if  self.loaded_from_idb == False:
+        if self.loaded_from_idb is False or not pe_tree.form.HAVE_IDA:
             return
 
         if item["width"] == 16:
@@ -991,13 +977,13 @@ class PETree(QtCore.QRunnable):
 
     def dump(self, obj):
         """Dump pefile structure
-        
+
         Args:
             obj (object): pefile.PE structure
 
         Return:
             object: Dumped structure
-        
+
         """
         dump = []
 
@@ -1023,10 +1009,10 @@ class PETree(QtCore.QRunnable):
 
                             if size[-1] == "s":
                                 width = int(size[:-1])
-                                break
                             elif size in widths:
                                 width = widths[size]
-                                break
+
+                            break
 
                 if isinstance(val, (int, long)):
                     if key in ["VirtualAddress", "ImageBase", "e_lfanew", "Offset", "Name", "SecurityCookie", "SEHandlerTable"] or "AddressOf" in key or "Thunk" in key:
@@ -1046,7 +1032,7 @@ class PETree(QtCore.QRunnable):
                             text = "{} (INVALID TIME)".format(text.strip())
 
                         timestamp = val
-                    
+
                     elif key in ["Size", "Misc_VirtualSize"] or key.startswith("SizeOf"):
                         text = "0x{:0{w}x} {}".format(val, pe_tree.utils.human_readable_filesize(val), w=width)
 
@@ -1059,12 +1045,12 @@ class PETree(QtCore.QRunnable):
                     if key.startswith("PdbFileName"):
                         text = text.rstrip(b"\x00")
 
-                dump.append({"file_offset": obj.__field_offsets__[key] + obj.get_file_offset(), 
-                             "field_offset": obj.__field_offsets__[key], 
-                             "key": key, 
+                dump.append({"file_offset": obj.__field_offsets__[key] + obj.get_file_offset(),
+                             "field_offset": obj.__field_offsets__[key],
+                             "key": key,
                              "name": pe_tree.qstandarditems.PEFileString(text),
                              "time": timestamp,
-                             "offset": va, 
+                             "offset": va,
                              "width": width,
                              "valid_va": valid_va})
 
@@ -1072,28 +1058,28 @@ class PETree(QtCore.QRunnable):
 
     def va_to_rva(self, offset):
         """Convert virtual address to relative virtual address
-        
+
         Args:
             offset (int): Virtual address
-        
+
         Return:
             int: Relative virtual address
 
         """
-        if offset >= self.pe.OPTIONAL_HEADER.ImageBase and offset <= self.pe.OPTIONAL_HEADER.ImageBase + self.size:
+        if self.pe.OPTIONAL_HEADER.ImageBase <= offset <= self.pe.OPTIONAL_HEADER.ImageBase + self.size:
             return offset - self.pe.OPTIONAL_HEADER.ImageBase
         else:
             return offset
 
     def get_offset_from_rva(self, rva):
         """Get file offset from RVA using pefile without generating an exception
-        
+
         Args:
             rva (int): Relative virtual address
 
         Returns:
             int: File offset if successful, otherwise -1
-        
+
         """
         try:
             return self.pe.get_offset_from_rva(rva)
@@ -1101,23 +1087,12 @@ class PETree(QtCore.QRunnable):
             # This will cause the region to appear at the start of the map view, but there should be warnings from pefile ;)
             return -1
 
-    def find_strings(self):
-        # Experimental!
-        strings = idautils.Strings(default_setup=False)
-        strings.setup(strtypes=[ida_nalt.STRTYPE_C, ida_nalt.STRTYPE_C_16], ignore_instructions=True, minlen=8)
-        strings.refresh()
-
-        for s in strings:
-            if not idc.GetStringType(s.ea):
-                idc.create_strlit(s.ea, s.ea + s.length)
-		        #idc.MakeStr(s.ea, s.ea + s.length)
-
 class TreeViewDelegate(QtWidgets.QStyledItemDelegate):
     """Extended QStyledItemDelegate class for providing a custom painter for CommonStandardItems in the tree view
-    
+
     Args:
         tree (pe_tree.tree.PETree): PE Tree
-   
+
     """
 
     def __init__(self, tree):
@@ -1126,12 +1101,12 @@ class TreeViewDelegate(QtWidgets.QStyledItemDelegate):
 
     def paint(self, painter, option, index):
         """Call StandardItem paint (if implemented) or pass to TreeView
-        
+
         Args:
             painter (QPainter): Item painter
             option (QStyleOptionViewItem): Item style option
             index (QModelIndex): Item model index
-        
+
         """
         # Find item
         item = self.tree.model.itemFromIndex(index.sibling(index.row(), index.column()))
@@ -1141,14 +1116,14 @@ class TreeViewDelegate(QtWidgets.QStyledItemDelegate):
         if hasattr(item, "paint"):
             # Does the item draw itself?
             painted = item.paint(painter, option, index)
-        
-        if painted == False:
+
+        if painted is False:
             # Draw standard item
             super(TreeViewDelegate, self).paint(painter, option, index)
 
     def sizeHint(self, option, index):
         """Set height of root item
-        
+
         Args:
             option (QStyleOptionViewItem): Item style option
             index (QModelIndex): Item model index
@@ -1165,7 +1140,7 @@ class TreeViewDelegate(QtWidgets.QStyledItemDelegate):
 
         size = super(TreeViewDelegate, self).sizeHint(option, index)
 
-        if item.is_root != False:
+        if item.is_root:
             # Set height of root item
             size.setHeight(24)
             return size

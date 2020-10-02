@@ -26,9 +26,12 @@ import pefile
 # Qt imports
 from PyQt5 import QtWidgets
 
+# PE Tree imports
+import pe_tree.form
+
 class DumpPEForm(QtWidgets.QDialog):
     """Display simple dialog for dumping PE files
-    
+
     Args:
         pe (pefile.PE): Parsed PE file
         image_base (int): Base address of PE file in-memory
@@ -37,7 +40,7 @@ class DumpPEForm(QtWidgets.QDialog):
         ptr_size (int): Width of pointer in characters, 8 = 32-bit, 16 = 64-bit
         form (pe_tree.form.PETreeForm): PE Tree main form
         parent (QWidget, optional): Dialog parent widget
-        
+
     """
     def __init__(self, pe, image_base, size, filename, ptr_size, form, parent=None):
         super(DumpPEForm, self).__init__(parent)
@@ -78,15 +81,15 @@ class DumpPEForm(QtWidgets.QDialog):
 
         self.use_existing_imports_radio = QtWidgets.QRadioButton("Use existing imports:")
         self.use_existing_imports_radio.setWhatsThis("Use existing IAT to rebuild imports")
-        self.use_existing_imports_radio.toggled.connect(lambda:self.toggle_iat_radios())
+        self.use_existing_imports_radio.toggled.connect(self.toggle_iat_radios)
 
         self.no_imports_radio = QtWidgets.QRadioButton("No imports")
         self.no_imports_radio.setWhatsThis("Do not rebuild IAT")
-        self.no_imports_radio.toggled.connect(lambda:self.toggle_iat_radios())
+        self.no_imports_radio.toggled.connect(self.toggle_iat_radios)
 
         self.rebuild_imports_radio = QtWidgets.QRadioButton("Rebuild imports")
         self.rebuild_imports_radio.setWhatsThis("Scan PE for IAT pointers and rebuild IAT")
-        self.rebuild_imports_radio.toggled.connect(lambda:self.toggle_iat_radios())
+        self.rebuild_imports_radio.toggled.connect(self.toggle_iat_radios)
         self.rebuild_imports_radio.setChecked(True)
 
         self.save_to_file_checkbox = QtWidgets.QCheckBox("Save to file")
@@ -107,18 +110,18 @@ class DumpPEForm(QtWidgets.QDialog):
         grid.setSpacing(10)
 
         widgets = [
-                (QtWidgets.QLabel("ImageBase:"), self.image_base_edit), 
-                (QtWidgets.QLabel("AddressOfEntryPoint:"), self.entry_point_edit), 
-                (QtWidgets.QLabel("SizeOfOptionalHeader:"), self.size_of_optional_header_edit), 
-                (self.no_imports_radio, QtWidgets.QWidget()),
-                (self.rebuild_imports_radio, QtWidgets.QWidget()),
-                (self.use_existing_imports_radio, QtWidgets.QWidget()),
-                (QtWidgets.QLabel("IAT:"), self.iat_rva_edit), 
-                (QtWidgets.QLabel("IAT Size:"), self.iat_size_edit),
-                (QtWidgets.QLabel("Output:"), QtWidgets.QWidget()),
-                (self.save_to_file_checkbox, QtWidgets.QWidget()),
-                (self.add_to_tree_checkbox, QtWidgets.QWidget()),
-                (QtWidgets.QWidget(), button_box)
+            (QtWidgets.QLabel("ImageBase:"), self.image_base_edit),
+            (QtWidgets.QLabel("AddressOfEntryPoint:"), self.entry_point_edit),
+            (QtWidgets.QLabel("SizeOfOptionalHeader:"), self.size_of_optional_header_edit),
+            (self.no_imports_radio, QtWidgets.QWidget()),
+            (self.rebuild_imports_radio, QtWidgets.QWidget()),
+            (self.use_existing_imports_radio, QtWidgets.QWidget()),
+            (QtWidgets.QLabel("IAT:"), self.iat_rva_edit),
+            (QtWidgets.QLabel("IAT Size:"), self.iat_size_edit),
+            (QtWidgets.QLabel("Output:"), QtWidgets.QWidget()),
+            (self.save_to_file_checkbox, QtWidgets.QWidget()),
+            (self.add_to_tree_checkbox, QtWidgets.QWidget()),
+            (QtWidgets.QWidget(), button_box)
             ]
 
         for row, (left, right) in enumerate(widgets):
@@ -157,21 +160,22 @@ class DumpPEForm(QtWidgets.QDialog):
                 iat_size = int(self.iat_size_edit.text(), 16)
 
             # Dump the PE file
-            pe_data = DumpPEFile(self.pe, 
-                                 self.image_base, 
-                                 self.size, 
-                                 self.runtime, 
-                                 find_iat_ptrs=find_patch_iat, 
-                                 patch_iat_ptrs=find_patch_iat, 
-                                 iat_rva=iat_rva, 
+            pe_data = DumpPEFile(self.pe,
+                                 self.image_base,
+                                 self.size,
+                                 self.runtime,
+                                 find_iat_ptrs=find_patch_iat,
+                                 patch_iat_ptrs=find_patch_iat,
+                                 iat_rva=iat_rva,
                                  iat_size=iat_size,
-                                 new_image_base=image_base, 
-                                 new_ep=entry_point, 
+                                 new_image_base=image_base,
+                                 new_ep=entry_point,
+                                 recalculate_pe_checksum=self.runtime.get_config_option("dump", "recalculate_pe_checksum", False),
                                  size_of_optional_header=size_of_optional_header).dump()
 
             # Add to tree
             if self.add_to_tree_checkbox.isChecked():
-                self.form.map_pe(image_base=image_base, data=pe_data, priority=1)
+                self.form.map_pe(image_base=image_base, data=pe_data, priority=1, filename=self.filename, opaque=self.runtime.opaque)
 
             # Save to file
             if self.save_to_file_checkbox.isChecked():
@@ -186,8 +190,8 @@ class DumpPEFile():
     """Dump PE file from memory and optionally rebuild imports.
 
     There are a number of ways to perform IAT reconstruction:
-    
-    1. By default the IAT will be rebuilt from the IMAGE_DIRECTORY_ENTRY_IAT virtual address, if possible. 
+
+    1. By default the IAT will be rebuilt from the IMAGE_DIRECTORY_ENTRY_IAT virtual address, if possible.
     2. If `find_iat_ptrs/patch_iat_ptrs` is set then the image disassembly will be searched for IAT xrefs which are used to construct a new IAT.
     3. It is possible to override the IMAGE_DIRECTORY_ENTRY_IAT virtual address and size using `iat_rva/iat_size`. This may be useful for malware that has set the IMAGE_DIRECTORY_ENTRY_IAT entry to 0 after loading.
     4. Alternatively, it is possible to specify all IAT locations in the image via `iat_ptrs`, a list of tuples containing the IAT offset, xref, module name and API name
@@ -198,7 +202,6 @@ class DumpPEFile():
         size (int): Size of PE file in-memory
         runtime (pe_tree.runtime.RuntimeSignals): Runtime callbacks
         find_iat_ptrs (bool, optional): Scan in-memory PE for IAT references (no need for iat_ptrs or iat_rva arguments)
-        patch_iat_ptrs (bool, optional): Rebuild IAT and patch references
         iat_ptrs ([(int, int, str, str)], optional): Specify IAT pointers using tuple containing IAT offset, xref, module name and API name
         iat_rva (int, optional): Specify address of the import address table (iat_size must be > 0)
         iat_size (int, optional): Specify size of the import address table (iat_rva must be != 0)
@@ -208,7 +211,7 @@ class DumpPEFile():
         recalculate_pe_checksum (bool, optional): Recalculate OPTIONAL_HEADER.CheckSum (warning, this is slow!)
 
     Returns:
-        bytes: PE data 
+        bytes: PE data
 
     """
     def __init__(self, pe, image_base, size, runtime, **kwargs):
@@ -232,14 +235,13 @@ class DumpPEFile():
         if pe.FILE_HEADER.Machine == pefile.MACHINE_TYPE["IMAGE_FILE_MACHINE_AMD64"]:
             self.ptr_size = 8
             self.ptr_format = "<Q"
-            self.set_word = pe.set_qword_at_offset
+            self.set_word = pe.set_qword_at_rva
             self.get_word = self.runtime.get_qword
         else:
             self.ptr_size = 4
             self.ptr_format = "<I"
-            self.set_word = pe.set_dword_at_offset
+            self.set_word = pe.set_dword_at_rva
             self.get_word = self.runtime.get_dword
-        
 
     def dump(self):
         """Dump PE file"""
@@ -255,21 +257,22 @@ class DumpPEFile():
 
         # Fix section pointers and sizes
         for section in pe.sections:
-            section.PointerToRawData = section.VirtualAddress
-            section.SizeOfRawData = section.Misc_VirtualSize
+            if pe_tree.form.HAVE_IDA:
+                section.PointerToRawData = section.VirtualAddress
+                section.SizeOfRawData = section.Misc_VirtualSize
 
             # Ensure entry-point section is executable
             if section.contains_offset(ep):
                 section.Characteristics |= pefile.SECTION_CHARACTERISTICS["IMAGE_SCN_MEM_EXECUTE"]
-                
+
                 # Is the segment in which the entry-point resides writable? (likely from a packer)
                 if self.runtime.is_writable(self.image_base + ep):
                     # Make the entry-point section writable
                     section.Characteristics |= pefile.SECTION_CHARACTERISTICS["IMAGE_SCN_MEM_WRITE"]
 
         # Find IAT pointers
-        if self.find_iat_ptrs != False:
-            self.iat_ptrs = self.runtime.find_iat_ptrs(self.image_base, self.size, self.get_word)
+        if self.find_iat_ptrs:
+            self.iat_ptrs = self.runtime.find_iat_ptrs(pe, self.image_base, self.size, self.get_word)
 
         # Found anything?
         if len(self.iat_ptrs) == 0:
@@ -333,7 +336,7 @@ class DumpPEFile():
                             # Use a common module name when resolving imports in-place, otherwise the IAT/IDT will not be in sync
                             last_module = module
 
-                        self.iat_ptrs.append((iat_ptr, i, last_module, api))
+                        self.iat_ptrs.append((iat_ptr, 0, last_module, api))
         else:
             # Create empty IAT pointer table
             iat_data = len(self.iat_ptrs) * (b"\x00" * self.ptr_size)
@@ -346,7 +349,7 @@ class DumpPEFile():
                 if len(modules) == 0:
                     modules.append({"name": module, "apis": [], "offset": offset})
 
-                if self.find_iat_ptrs != False:
+                if self.find_iat_ptrs:
                     # Building our own IAT we can combine all modules/APIs
                     found_module = False
 
@@ -357,7 +360,7 @@ class DumpPEFile():
                             found_module = True
                             break
 
-                    if found_module == False:
+                    if not found_module:
                         modules.append({"name": module, "apis": [api], "offset": offset})
                 else:
                     # Using an existing IAT we need to keep modules/APIs in order
@@ -389,7 +392,7 @@ class DumpPEFile():
 
             iat_index = 0
 
-            if self.find_iat_ptrs != False:
+            if self.find_iat_ptrs:
                 # IAT will be at the end of the image in a new section
                 iat_base = import_rva
             else:
@@ -400,11 +403,11 @@ class DumpPEFile():
                 #iat_index = module["offset"]
 
                 # Add descriptor - OriginalFirstThunk, TimeDateStamp, ForwarderChain, Name, FirstThunk
-                idt_data += struct.pack("<LLLLL", 
-                                        import_rva + len(iat_data) + name_table_len + iat_index, 
-                                        0, 
-                                        0, 
-                                        import_rva + len(iat_data) + name_table.find(module["name"].encode()), 
+                idt_data += struct.pack("<LLLLL",
+                                        import_rva + len(iat_data) + name_table_len + iat_index,
+                                        0,
+                                        0,
+                                        import_rva + len(iat_data) + name_table.find(module["name"].encode()),
                                         iat_base + iat_index)
 
                 name_table_offset += len(module["name"].encode() + b"\0")
@@ -417,8 +420,7 @@ class DumpPEFile():
                     name_table_offset += len(api.encode()) + 1
                     name_table_offset += name_table_offset % 2
                     name_table_offset += 2
-
-                    name_to_iat["{}!{}".format(module, api)] = iat_base + iat_index
+                    name_to_iat["{}!{}".format(module["name"], api)] = iat_base + iat_index
 
                     iat_index += self.ptr_size
 
@@ -430,8 +432,12 @@ class DumpPEFile():
             import_data = iat_data + name_table + idt_data
 
             # Patch addresses to point to new IAT
-            if self.patch_iat_ptrs != False:
-                self.runtime.patch_iat_ptrs(self.image_base, self.size, self.iat_ptrs, name_to_iat, self.get_word, self.set_word)
+            patched = []
+            for iat_ptr, offset, module, api in self.iat_ptrs:
+                if offset and offset not in patched:
+                    # Update IAT pointer in PE
+                    self.set_word(offset - self.image_base, self.image_base + name_to_iat["{}!{}".format(module, api)])
+                    patched.append(offset)
 
             # Update imports and IAT directory entries
             pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]].VirtualAddress = import_rva + len(iat_data) + len(name_table)
@@ -459,9 +465,6 @@ class DumpPEFile():
         pe.OPTIONAL_HEADER.DllCharacteristics &= ~pefile.DLL_CHARACTERISTICS["IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE"]
 
         # Remove base relocs, bound imports and security directories, as they are somewhat meaningless now
-        security_va = pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_SECURITY"]].VirtualAddress
-        security_size = pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_SECURITY"]].Size
-
         pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_BASERELOC"]].VirtualAddress = 0
         pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_BASERELOC"]].Size = 0
 
@@ -471,83 +474,60 @@ class DumpPEFile():
         pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_SECURITY"]].VirtualAddress = 0
         pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_SECURITY"]].Size = 0
 
-        end_va = self.align((pe.sections[-1].VirtualAddress + pe.sections[-1].Misc_VirtualSize), pe.OPTIONAL_HEADER.SectionAlignment)
+        overlay = pe.get_overlay()
+        overlay = overlay if overlay is not None else bytearray()
 
         if len(self.iat_ptrs) > 0:
-            # Add new .idata section to hold IDT
-            offset = pe.sections[-1].get_file_offset() + 40
+            # Add new .idata section to hold IAT + IDT + hint name table
+            pe_data = pe.trim()
 
-            virtual_size = self.align(len(import_data), pe.OPTIONAL_HEADER.SectionAlignment)
-            virtual_offset = end_va
+            # Create empty section
+            section = pefile.SectionStructure(pe.__IMAGE_SECTION_HEADER_format__)
+            section.__unpack__(bytearray(section.sizeof()))
+            section.set_file_offset(pe.sections[-1].get_file_offset() + pe.sections[-1].sizeof())
 
-            pe.set_bytes_at_offset(offset, b".idata\0\0")
-        
-            # Virtual size/address
-            pe.set_dword_at_offset(offset + 8, virtual_size)
-            pe.set_dword_at_offset(offset + 12, virtual_offset)
-        
-            # Raw size/length
-            pe.set_dword_at_offset(offset + 16, virtual_size)
-            pe.set_dword_at_offset(offset + 20, virtual_offset)
-        
-            # Ptrs
-            pe.set_bytes_at_offset(offset + 24, (12 * b"\x00"))
+            # Fill in section details
+            section.Name = b".pe_tree"
+            section.Misc_VirtualSize = len(import_data)
+            section.VirtualAddress = pe.sections[-1].VirtualAddress + self.align(pe.sections[-1].Misc_VirtualSize, pe.OPTIONAL_HEADER.SectionAlignment)
+            section.SizeOfRawData = self.align(len(import_data), pe.OPTIONAL_HEADER.FileAlignment)
+            section.PointerToRawData = self.align(len(pe_data), pe.OPTIONAL_HEADER.FileAlignment)
+            section.Characteristics = pefile.SECTION_CHARACTERISTICS["IMAGE_SCN_CNT_INITIALIZED_DATA"] | pefile.SECTION_CHARACTERISTICS["IMAGE_SCN_MEM_READ"] | pefile.SECTION_CHARACTERISTICS["IMAGE_SCN_MEM_EXECUTE"]
 
-            # Characteristics
-            pe.set_dword_at_offset(offset + 36, pefile.SECTION_CHARACTERISTICS["IMAGE_SCN_CNT_INITIALIZED_DATA"] | pefile.SECTION_CHARACTERISTICS["IMAGE_SCN_MEM_READ"] | pefile.SECTION_CHARACTERISTICS["IMAGE_SCN_MEM_EXECUTE"])
-
+            # Update PE headers
             pe.FILE_HEADER.NumberOfSections += 1
-            pe.OPTIONAL_HEADER.SizeOfImage = virtual_offset + virtual_size
+            pe.OPTIONAL_HEADER.SizeOfImage += section.VirtualAddress + self.align(len(import_data), pe.OPTIONAL_HEADER.SectionAlignment)
 
-            # Shunt out all data beyond our appended section
-            for structure in pe.__structures__:
-                if structure.get_file_offset() > pe.sections[-1].get_file_offset():
-                    structure.set_file_offset(structure.get_file_offset() + 40)
-                    try:
-                        structure.PointerToRawData += 40
-                    except:
-                        pass
+            # Append import data
+            pe_data += (self.align(len(pe_data), pe.OPTIONAL_HEADER.FileAlignment) - len(pe_data)) * b"\0"
+            pe_data += import_data
+            pe_data += (self.align(len(pe_data), pe.OPTIONAL_HEADER.FileAlignment) - len(pe_data)) * b"\0"
+            pe.__data__ = pe_data
 
-         # Recalculate PE checksum if enabled (warning, very slow!)
-        if self.recalculate_pe_checksum != False:
+            # Add section to pefile
+            pe.sections.append(section)
+            pe.__structures__.append(section)
+
+        # Recalculate PE checksum if enabled (warning, very slow!)
+        if self.recalculate_pe_checksum:
             pe.OPTIONAL_HEADER.CheckSum = pe.generate_checksum()
 
-        # Construct PE
-        pe_data = pe.write()
-
-        overlay_offset = end_va
-        overlay_data = pe_data[overlay_offset:]
-
-        # Remove overlay
-        pe_data = pe_data[:overlay_offset]
-
-        if len(self.iat_ptrs) > 0:
-            # Append import data
-            pe_data += import_data
-
-        pe_data += (pe.OPTIONAL_HEADER.SectionAlignment - (len(pe_data) % pe.OPTIONAL_HEADER.SectionAlignment)) * b"\0"
-
-        if security_va != 0 and security_size != 0:
-            size = min(security_size, len(overlay_data))
-
-            overlay_data = overlay_data[size:]
-
-        # Append overlay
-        pe_data += overlay_data
+        # Put any overlay back
+        pe.__data__ += overlay
 
         # Return data
         if sys.version_info > (3,):
-            return pe_data
-        else:
-            return "".join(map(chr, pe_data))
+            return pe.write()
+
+        return "".join(map(chr, pe.write()))
 
     def align(self, val_to_align, alignment):
         """Align value
-        
+
         Arguments:
             val_to_align (int): Value
             alignment (int): Alignment multiple
-        
+
         Returns:
             int: Value rounded to alignment
 

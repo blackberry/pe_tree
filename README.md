@@ -1,6 +1,6 @@
 # PE Tree
 > Python module for viewing [Portable Executable (PE) files](https://en.wikipedia.org/wiki/Portable_Executable) in a tree-view using [pefile](https://github.com/erocarrera/pefile) and [PyQt5](https://pypi.org/project/PyQt5/).
-> Can also be used with [IDA Pro](https://www.hex-rays.com/products/ida/) to dump in-memory PE files and reconstruct imports.
+> Can also be used with [IDA Pro](https://www.hex-rays.com/products/ida/) and [Rekall](http://www.rekall-forensic.com/) to dump in-memory PE files and reconstruct imports.
 
 - [Features](#features)
 - [Application](#application)
@@ -20,17 +20,22 @@
   * [Usage](#usage)
   * [Examples](#examples)
     * [Dumping in-memory PE files](#dumping-in-memory-pe-files)
+- [Rekall](#rekall)
+  * [Requirements](#requirements-2)
+  * [Installation](#installation-2)
+  * [Usage](#usage-2)
 - [Configuration](#configuration)
-  * [Overview](#overview-1)
+  * [Overview](#overview)
   * [Options](#options)
   * [Location](#location)
   * [3rd party data sharing](#3rd-party-data-sharing)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
   * [Developer documentation](#developer-documentation)
+- [License](#license)
 
 ## Features
-- Standalone application and IDAPython plugin
+- Standalone application, IDAPython plugin and Rekall plugin
 - Supports Windows/Linux/Mac
 - Rainbow PE ratio map:
   * High-level overview of PE structures, size and file location
@@ -78,6 +83,11 @@
     * Dump reconstructed PE files
     * Automatically comment PE file structures in IDB
     * Automatically label IAT offsets in IDB
+- Rekall plugin:
+  * Operates against memory dump or live system 
+  * View, dump and rebuild PE files from;
+    * Active processes and modules
+    * Loaded kernel-mode drivers
 
 ## Application
 ![PE Tree standalone application](./doc/images/pe_tree.png)
@@ -207,6 +217,29 @@ Finally, the BASERELOC, BOUND_IMPORT and SECURITY data directories are marked nu
 
 Using the above approach it is possible to dump many in-memory PE files that have either been unpacked, remotely injected, reflectively loaded or hollowed etc.
 
+## Rekall plugin
+![PE Tree Rekall plugin](./doc/images/pe_tree_rekall.png)
+### Requirements
+- Python 3+
+### Installation
+
+1. Install Rekall from [GitHub](https://github.com/google/rekall#quick-start).
+2. Install PE Tree standalone application (see [Installation](#installation)) under the same virtual environment.
+
+### Usage
+
+Run Rekall and dump active processes, DLLs and drivers on a live system:
+
+```
+$ rekall --live Memory
+[1] Live (Memory) 00:00:00> run -i pe_tree_rekall.py
+```
+Alternatively, run Rekall/PE Tree against an existing memory dump:
+```
+$rekall -f memory.vmem
+[1] memory.vmem 00:00:00> run -i pe_tree_rekall.py
+```
+
 ## Configuration
 
 ### Overview
@@ -244,6 +277,8 @@ recalculate_pe_checksum = False
 | Application | Linux/Mac | `/tmp/pe_tree.ini`                      |
 | IDAPython   | Windows   | `%APPDATA%\HexRays\IDA Pro\pe_tree.ini` |
 | IDAPython   | Linux/Mac | `~/.idapro/pe_tree.ini`                 |
+| Rekall      | Windows   | `%TEMP%\pe_tree_rekall.ini`             |
+| Rekall      | Linux/Mac | `/tmp/pe_tree_rekall.ini`               |
 
 ### 3rd party data sharing
 

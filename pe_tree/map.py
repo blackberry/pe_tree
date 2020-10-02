@@ -25,7 +25,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 class FileRegion():
     """Holds information about a file region for the map view
-    
+
     Args:
         name (str): Name of the region
         start (int, optional): File offset
@@ -57,7 +57,7 @@ class FileRegion():
 
 class PEMap(QtWidgets.QGroupBox):
     """PE map group box widget for holding region labels
-    
+
     Args:
         file_size (int): Size of the PE file
         parent (QWidget, optional): Parent widget
@@ -76,7 +76,7 @@ class PEMap(QtWidgets.QGroupBox):
         # Remove space between widgets
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(0)
-        
+
         # Set background to white (for alpha)
         self.setStyleSheet("background-color: white; margin-top: 0px; padding: 0px;")
 
@@ -121,7 +121,7 @@ class PEMap(QtWidgets.QGroupBox):
 
 class PEMapLabel(QtWidgets.QLabel):
     """PE map label widget
-    
+
     Args:
         region (pe_tree.map.FileRegion): PE file region
         colour (QColor): Region background colour
@@ -151,10 +151,10 @@ class PEMapLabel(QtWidgets.QLabel):
 
     def paintEvent(self, event):
         """Draw the PE map label
-        
+
         Args:
             event (QPaintEvent): Paint event
-        
+
         """
         # Get sizes from the paint event
         r = event.rect()
@@ -173,7 +173,7 @@ class PEMapLabel(QtWidgets.QLabel):
 
         colour, colour_alpha = colour_alpha, colour
 
-        if region.hover != False:
+        if region.hover:
             # Invert the colours on mouse over
             colour, colour_alpha = colour_alpha, colour
 
@@ -214,10 +214,10 @@ class PEMapLabel(QtWidgets.QLabel):
 
     def mouseMoveEvent(self, event):
         """Set region hover state and redraw the PE map label
-        
+
         Args:
             event (QMouseEvent): Mouse move event
-        
+
         """
         self.region.hover = True
         self.update()
@@ -227,7 +227,7 @@ class PEMapLabel(QtWidgets.QLabel):
 
         Args:
             event (QMouseEvent): Mouse move event
-        
+
         """
         self.region.hover = False
         self.update()
@@ -237,7 +237,7 @@ class PEMapLabel(QtWidgets.QLabel):
 
         Args:
             event (QMouseEvent): Mouse press event
-        
+
         """
         if event.button() == QtCore.Qt.RightButton:
             return
@@ -260,7 +260,7 @@ class PEMapLabel(QtWidgets.QLabel):
 
         Args:
             event (QMouseEvent): Mouse click event
-        
+
         """
         self.region.hover = False
 
@@ -271,7 +271,7 @@ class PEMapLabel(QtWidgets.QLabel):
 
         Args:
             point (QPoint): Right-click location
-        
+
         """
         item = self.region.item
         form = item.tree.form
