@@ -19,7 +19,6 @@
 # Standard imports
 import os
 import sys
-import tempfile
 import scandir
 
 # Qt imports
@@ -29,9 +28,9 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 try:
     import qdarkstyle
 
-    have_darkstyle = True
+    HAVE_DARKSTYLE = True
 except:
-    have_darkstyle = False
+    HAVE_DARKSTYLE = False
 
 # PE Tree imports
 import pe_tree.runtime
@@ -47,46 +46,6 @@ class ApplicationRuntime(pe_tree.runtime.Runtime):
         super(ApplicationRuntime, self).__init__(widget)
 
         self.pe_tree_form = None
-
-    def get_temp_dir(self):
-        """Get temporary directory path"""
-        self.ret = tempfile.gettempdir()
-        return self.ret
-
-    def get_script_dir(self):
-        """Get script directory"""
-        self.ret = os.path.dirname(os.path.realpath(__file__))
-        return self.ret
-
-    def ask_file(self, filename, caption, filter="All Files (*)", save=False):
-        """Open/save file dialog"""
-        dialog = QtWidgets.QFileDialog()
-        options = QtWidgets.QFileDialog.Options()
-
-        if save == False:
-            # Open file dialog
-            filename, _ = dialog.getOpenFileName(self.widget, caption, filename, filter, options=options)
-        else:
-            # Save file dialog
-            if filename[0] == ".":
-                # Remove leading dot from section names
-                filename = filename[1:]
-
-            filename, _ = dialog.getSaveFileName(self.widget, caption, filename, filter, options=options)
-
-        if filename:
-            self.ret = filename
-        else:
-            self.ret = ""
-            
-        return self.ret
-
-    def show_widget(self):
-        """Display the widget"""
-        self.widget.show()
-
-        self.ret = True
-        return self.ret
 
     def jumpto(self, item, offset):
         """Disassemble using capstone"""
@@ -110,11 +69,11 @@ class ApplicationRuntime(pe_tree.runtime.Runtime):
 
 class ScanDir(QtCore.QRunnable):
     """Scan directory thread
-    
+
     Args:
         pe_tree_form (pe_tree.form): PE Tree form
         filename (str): Path to file/folder to scan for PE files
-        
+
     """
     def __init__(self, pe_tree_form, filename):
         super(ScanDir, self).__init__()
@@ -140,20 +99,20 @@ class ScanDir(QtCore.QRunnable):
 class PETreeWindow(QtWidgets.QMainWindow):
     """Main window for the PE Tree application"""
 
-    def __init__(self, application):
+    def __init__(self, application, runtime, open_file=True):
         super(PETreeWindow, self).__init__()
 
         self.application = application
 
         # Create container widget, runtime and PE Tree form
         widget = QtWidgets.QWidget()
-        self.runtime = ApplicationRuntime(widget)
+        self.runtime = runtime(widget)
         self.pe_tree_form = pe_tree.form.PETreeForm(widget, application, self.runtime)
         self.pe_tree_form.dispatcher = application.eventDispatcher()
         application.aboutToQuit.connect(self.pe_tree_form.wait_for_threads)
         self.runtime.pe_tree_form = self.pe_tree_form
 
-        if have_darkstyle:
+        if HAVE_DARKSTYLE:
             application.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
 
         self.setWindowTitle(pe_tree.info.__title__)
@@ -162,7 +121,7 @@ class PETreeWindow(QtWidgets.QMainWindow):
         self.setAcceptDrops(True)
 
         # Construct application main menu
-        open_menu = QtWidgets.QMenu("Open", self)
+        self.open_menu = QtWidgets.QMenu("Open", self)
 
         open_file_action = QtWidgets.QAction("File", self)
         open_file_action.setShortcut("Ctrl+O")
@@ -172,10 +131,10 @@ class PETreeWindow(QtWidgets.QMainWindow):
         open_directory_action = QtWidgets.QAction("Folder", self)
         open_directory_action.setShortcut("Ctrl+Shift+O")
         open_directory_action.setStatusTip("Scan folder for PE files")
-        open_directory_action.triggered.connect(lambda x:self.open_folder())
+        open_directory_action.triggered.connect(self.open_folder)
 
-        open_menu.addAction(open_file_action)
-        open_menu.addAction(open_directory_action)
+        self.open_menu.addAction(open_file_action)
+        self.open_menu.addAction(open_directory_action)
 
         exit_action = QtWidgets.QAction("Exit", self)
         exit_action.setShortcut("Ctrl+X")
@@ -183,11 +142,11 @@ class PETreeWindow(QtWidgets.QMainWindow):
         exit_action.triggered.connect(application.quit)
 
         about_action = QtWidgets.QAction("About", self)
-        about_action.triggered.connect(lambda x:self.runtime.about_box())
+        about_action.triggered.connect(self.runtime.about_box)
 
         menu = self.menuBar()
         file_menu = menu.addMenu("&File")
-        file_menu.addMenu(open_menu)
+        file_menu.addMenu(self.open_menu)
         file_menu.addAction(exit_action)
 
         help_menu = menu.addMenu("&Help")
@@ -198,23 +157,26 @@ class PETreeWindow(QtWidgets.QMainWindow):
             # Map all files/folders specified on the command line
             for filename in sys.argv[1:]:
                 self.pe_tree_form.threadpool.start(ScanDir(self.pe_tree_form, filename))
-        else:
+        elif open_file is not False:
             # Ask user to select file/folder
             self.open_file()
 
     def dragEnterEvent(self, e):
+        """Accept drag events containing URLs"""
         if e.mimeData().hasUrls:
             e.accept()
         else:
             e.ignore()
 
     def dragMoveEvent(self, e):
+        """Accept drag events containing URLs"""
         if e.mimeData().hasUrls:
             e.accept()
         else:
             e.ignore()
 
     def dropEvent(self, e):
+        """File drag/dropped onto the main form, attempt to map as PE"""
         if e.mimeData().hasUrls:
             e.accept()
 
@@ -256,9 +218,9 @@ class PETreeWindow(QtWidgets.QMainWindow):
         return self.exec_open_dialog(dialog)
 
 def main(args=None):
-    # Create PE Tree Qt application
+    """Create PE Tree Qt standalone application"""
     application = QtWidgets.QApplication(sys.argv)
-    window = PETreeWindow(application)
+    window = PETreeWindow(application, ApplicationRuntime)
     window.showMaximized()
     sys.exit(application.exec_())
 

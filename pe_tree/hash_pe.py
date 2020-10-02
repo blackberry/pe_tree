@@ -24,7 +24,7 @@ import pefile
 
 def hash_data(data, entropy_H):
     """Calculate MD5/SHA1/SHA256 of given data
-    
+
     Args:
         data (bytes): Data to calculate hashes/entropy
         entropy_H (pefile.SectionStructure.entropy_H): Callback function for calculating entropy
@@ -60,21 +60,21 @@ def hash_pe_file(filename, data=None, pe=None, json_dumps=True):
     Returns:
         dict: PE file hashes if json_dumps == False
         str: JSON PE file hashes if json_dumps == True
-    
+
     """
-    if pe == None:
+    if pe is None:
         pe = pefile.PE(filename)
 
     # Calculate entropy (use pefile implementation!)
     entropy_H = pefile.SectionStructure(pe.__IMAGE_SECTION_HEADER_format__, pe=pe).entropy_H
 
     file_hashes = {"file": {"md5": "", "sha1": "", "sha256": "", "entropy": 0.0, "size": 0},
-              "file_no_overlay": {"md5": "", "sha1": "", "sha256": "", "entropy": 0.0, "size": 0},
-              "dos_stub": {"md5": "", "sha1": "", "sha256": "", "entropy": 0.0, "size": 0},
-              "sections": [], 
-              "resources": [],
-              "security_directory": {"md5": "", "sha1": "", "sha256": "", "entropy": 0.0, "size": 0},
-              "overlay": {"md5": "", "sha1": "", "sha256": "", "entropy": 0.0, "size": 0}}
+                   "file_no_overlay": {"md5": "", "sha1": "", "sha256": "", "entropy": 0.0, "size": 0},
+                   "dos_stub": {"md5": "", "sha1": "", "sha256": "", "entropy": 0.0, "size": 0},
+                   "sections": [],
+                   "resources": [],
+                   "security_directory": {"md5": "", "sha1": "", "sha256": "", "entropy": 0.0, "size": 0},
+                   "overlay": {"md5": "", "sha1": "", "sha256": "", "entropy": 0.0, "size": 0}}
 
     if not data:
         with open(filename, "rb") as f:
@@ -140,6 +140,6 @@ def hash_pe_file(filename, data=None, pe=None, json_dumps=True):
     # Return JSON
     if json_dumps:
         return json.dumps(file_hashes)
-    
+
     # Return dict
     return file_hashes

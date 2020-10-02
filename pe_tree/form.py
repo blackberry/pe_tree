@@ -30,11 +30,19 @@ from PyQt5 import QtCore, QtGui, QtWidgets, Qt
 
 # IDAPro imports
 try:
-    import idc
+    import idc # pylint: disable=unused-import
 
-    have_ida = True
+    HAVE_IDA = True
 except ImportError:
-    have_ida = False
+    HAVE_IDA = False
+
+# Rekall imports
+try:
+    import rekall # pylint: disable=unused-import
+
+    HAVE_REKALL = True
+except ImportError:
+    HAVE_REKALL = False
 
 # PE Tree imports
 import pe_tree.tree
@@ -45,7 +53,7 @@ import pe_tree.utils
 
 class PETreeForm():
     """PETree GUI and helper functions
-    
+
     Args:
         widget (QWidget): Parent widget
         application (QApplication): Application widget, or None for IDA plugin
@@ -97,8 +105,8 @@ class PETreeForm():
         self.treeview.collapsed.connect(self.collapsed)
         self.treeview.selectionModel().selectionChanged.connect(self.selection_changed)
         self.treeview.setVisible(False)
-            
-        if not have_ida:
+
+        if not HAVE_IDA:
             self.treeview.setStyleSheet("""
                 QTreeView::item:selected {
                 }
@@ -120,12 +128,12 @@ class PETreeForm():
 
         right_pane.addWidget(self.treeview)
 
-        if have_ida == False:
+        if not HAVE_IDA:
             self.output_stack = QtWidgets.QStackedWidget()
 
             right_pane.addWidget(self.output_stack)
 
-            right_pane.setOrientation(QtCore.Qt.Vertical) 
+            right_pane.setOrientation(QtCore.Qt.Vertical)
             right_pane.setSizes([300, 100])
 
         # Create the splitter
@@ -181,14 +189,14 @@ class PETreeForm():
         self.signals.process_file.connect(self.process_file)
         self.dispatcher = None
 
-        if not have_ida:
+        if not HAVE_IDA and not HAVE_REKALL:
             # Use process pool for parsing PE files
             self.processpool = multiprocessing.Pool(1)
         else:
             # Process pool does bad things under IDA!
             self.processpool = None
 
-        if have_ida:
+        if HAVE_IDA:
             # For IDA we'll have to wait for threads on-close like this
             self.widget.destroyed.connect(self.wait_for_threads)
 
@@ -201,12 +209,12 @@ class PETreeForm():
         self.threadpool.clear()
 
         # Process application events whilst we wait for all threads to complete
-        if self.dispatcher != None:
-            while self.threadpool.waitForDone(10) == False:
+        if self.dispatcher is not None:
+            while not self.threadpool.waitForDone(10):
                 self.dispatcher.processEvents(Qt.QEventLoop.AllEvents)
 
         # Wait for processes to complete
-        if self.processpool != None:
+        if self.processpool is not None:
             self.processpool.close()
             self.processpool.join()
 
@@ -214,12 +222,12 @@ class PETreeForm():
         """Abort all map/scan dir threads"""
         # Wait for all threads/processes to complete
         self.wait_for_threads()
-        
+
         # Hide the progress bar
         self.status_widget.setVisible(False)
-        
+
         # Recreate the process pool (cannot use again after close)
-        if self.processpool != None:
+        if self.processpool is not None:
             self.processpool = multiprocessing.Pool(1)
 
         # Clear the stop event
@@ -232,7 +240,7 @@ class PETreeForm():
 
             filepath = os.path.join(self.runtime.get_temp_dir(), "comp_id.txt")
 
-            # Download compiler IDs 
+            # Download compiler IDs
             if not os.path.exists(filepath):
                 r = requests.get("https://raw.githubusercontent.com/dishather/richprint/master/comp_id.txt", allow_redirects=True)
                 with open(filepath, "wb") as compiler_ids_file:
@@ -241,11 +249,11 @@ class PETreeForm():
             with open(filepath, "r") as compiler_ids_file:
                 # Parse compiler IDs into dict
                 self.compiler_ids = {}
-        
+
                 for line in compiler_ids_file.readlines():
                     if len(line) <= 2 or line[0] == "#":
                         continue
-                    
+
                     ids = line.split(" ")
 
                     # Create description entry
@@ -255,26 +263,26 @@ class PETreeForm():
 
     def load_icon(self, file_path):
         """Load icon from file
-        
+
         Args:
             file_path (str): Path to icon file
 
         Returns:
             QIcon: Icon loaded with image from file, otherwise a blank QIcon on error
-            
+
         """
         try:
             if os.path.exists(file_path):
                 with open(file_path, "rb") as ficon:
-                    return pe_tree.utils.QIcon_from_ICO_data(ficon.read())
+                    return pe_tree.utils.qicon_from_ico_data(ficon.read())
         except:
             pass
-            
+
         return QtGui.QIcon()
 
     def set_map_view(self, item):
         """Set the tree view's corresponding map view to active in the map stack
-        
+
         Args:
             item (pe_tree.tree.PETree): Active tree view
 
@@ -289,7 +297,7 @@ class PETreeForm():
 
     def expanded(self, index):
         """Update map view if tree node expanded
-        
+
          Args:
             index (QModelIndex): Item model index
 
@@ -356,7 +364,7 @@ class PETreeForm():
         # Find item that was right-clicked
         item = self.model.itemFromIndex(index)
 
-        if item == None:
+        if item is None:
             item = pe_tree.qstandarditems.NoItem(pe_tree.tree.PETree(self, "", 0, None))
 
         # Display the item's context menu
@@ -364,7 +372,7 @@ class PETreeForm():
 
     def selection_changed(self, selection):
         """Change PE map in map stack
-        
+
         Args:
             selection (QItemSelectionModel): PE tree view selection
 
@@ -402,7 +410,7 @@ class PETreeForm():
 
     def process_file(self, filename):
         """Signaled via worker thread to update status bar UI.
-        
+
         Args:
             filename (str): The path of the current file being processed
 
@@ -412,17 +420,21 @@ class PETreeForm():
 
     def update_ui(self, tree):
         """Add treeview and map widgets to the main form. Signaled via worker thread.
-        
+
         Args:
             tree (pe_tree.tree.PETree): New PETree to add to the form view
 
         """
+        # Hide the status bar if no more threads are running
+        if self.threadpool.activeThreadCount() == 0:
+            self.status_widget.setVisible(False)
+
         # Have we been signaled to stop?
         if self.stop_event.is_set():
             return
 
         # Ensure we have root items
-        if not tree.root_item or not tree.root_value_item:
+        if not tree or not tree.root_item or not tree.root_value_item:
             return
 
         # Get the "invisible root" for the tree model
@@ -438,7 +450,7 @@ class PETreeForm():
 
             tree.output_view_index = self.output_stack.addWidget(tree.output_view)
 
-            if has_children == False:
+            if not has_children:
                 # Set the output widgets as active
                 self.output_stack.setCurrentIndex(tree.output_view_index)
 
@@ -460,7 +472,7 @@ class PETreeForm():
         self.tree_roots.append(tree)
 
         # Is this the first PE file?
-        if has_children == False:
+        if not has_children:
             # Set the map widget as active
             self.map_stack.setCurrentIndex(tree.map_index)
 
@@ -469,21 +481,18 @@ class PETreeForm():
         # Ensure the filename fits in the column
         self.treeview.resizeColumnToContents(0)
 
-        # Hide the status bar if no more threads are running
-        if self.threadpool.activeThreadCount() == 0:
-            self.status_widget.setVisible(False)
-
-    def map_pe(self, filename=None, image_base=0, data=None, priority=0):
+    def map_pe(self, filename=None, image_base=0, data=None, priority=0, opaque=None):
         """Starts a new thread to map PE from file/memory/data
-        
+
         Args:
             filename (str, optional): Path to PE file to map
             image_base (int, optional): Image base of PE file to map
             data (bytes, optional): PE File data to map
             priority (int, optional): QRunnable thread priority
-        
+            opaque (object): Opaque object pointer passed to runtime
+
         """
-        self.threadpool.start(pe_tree.tree.PETree(self, filename, image_base, data), priority)
+        self.threadpool.start(pe_tree.tree.PETree(self, filename, image_base, data, opaque=opaque), priority)
 
     def show(self):
         """Display the main form widget"""

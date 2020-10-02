@@ -27,14 +27,14 @@ import collections
 # Qt imports
 from PyQt5 import QtGui, Qt
 
-def hexdump(buffer, base, width=16):
+def hexdump(buffer, base=0, width=16):
     """Hexdump a buffer
-    
+
     Args:
         buffer (bytes): Data to hexdump
         base (int): Base address of data
         width (int): Number of bytes to show per line
-    
+
     Returns:
         str: Hex dump of data
 
@@ -62,13 +62,13 @@ def hexdump(buffer, base, width=16):
 
 def human_readable_filesize(size):
     """Convert file size in bytes to human readable format
-    
+
     Args:
         size (int): Size in bytes
 
     Returns:
         str: Human readable file-size, i.e. 567.4 KB (580984 bytes)
-    
+
     """
     if size < 1024:
         return "{} bytes".format(size)
@@ -78,9 +78,9 @@ def human_readable_filesize(size):
             return "{:.1f} {} ({:d} bytes)".format(remain, unit, size)
         remain /= 1024.0
 
-def QIcon_from_ICO_data(data):
+def qicon_from_ico_data(data):
     """Convert ICO/PNG data to QIcon
-    
+
     Args:
         data (bytes): Data starting with either an ICONDIR or BITMAPINFOHEADER
 
@@ -166,7 +166,7 @@ def QIcon_from_ICO_data(data):
 
         # Read pixels
         pixel_data = bmp.read(stride * height)
-        
+
         if sys.version_info > (3,):
             _ord = int
         else:

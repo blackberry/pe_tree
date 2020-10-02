@@ -33,15 +33,15 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 try:
     import qdarkstyle
 
-    have_darkstyle = True
+    HAVE_DARKSTYLE = True
 except:
-    have_darkstyle = False
+    HAVE_DARKSTYLE = False
 
 # PE Tree imports
 import pe_tree.form
 import pe_tree.tree
 import pe_tree.exceptions
-import pe_tree.utils  
+import pe_tree.utils
 
 class PEFileString():
     """Sanitise strings from pefile"""
@@ -71,8 +71,8 @@ class PEFileString():
 
         if isinstance(buffer[0], int):
             return "".join([chr(i) if (chr(i) in string.printable and chr(i) not in self.whitespace) else "\\x{0:02x}".format(i) for i in buffer])
-        else:
-            return "".join([i if (i in string.printable and i not in self.whitespace) else "\\x{0:02x}".format(ord(i)) for i in buffer])
+        
+        return "".join([i if (i in string.printable and i not in self.whitespace) else "\\x{0:02x}".format(ord(i)) for i in buffer])
 
     def __str__(self):
         """Return internal sanitised string"""
@@ -84,7 +84,7 @@ class PEFileString():
 
 class CommonStandardItem(QtGui.QStandardItem):
     """Base class for all tree view items
-    
+
     Args:
         tree (pe_tree.tree.PETree): Parent PE Tree
         name (str): Display name
@@ -152,7 +152,7 @@ class CommonStandardItem(QtGui.QStandardItem):
             self.setForeground(QtGui.QColor("#0477BF"))
 
         # Set save filename
-        if self.filename != None:
+        if self.filename is not None:
             self.filename = "{}.{}".format(self.filename, self.ext)
 
     def appendRow(self, items):
@@ -175,12 +175,12 @@ class CommonStandardItem(QtGui.QStandardItem):
         size = size if size != 0 else self.size
 
         try:
-            if self.data != None:
+            if self.data is not None:
                 # Item has data associated
                 return self.data
-            else:
-                # Try to read the data from pefile
-                return self.tree.pe.get_memory_mapped_image()[offset:offset + size]
+
+            # Try to read the data from pefile
+            return self.tree.pe.get_memory_mapped_image()[offset:offset + size]
         except Exception:
             # Try to read the data from IDA runtime
             return self.tree.runtime.get_bytes(offset, size)
@@ -191,7 +191,7 @@ class CommonStandardItem(QtGui.QStandardItem):
             # Add VT search action to menu
             actions.actions.append(actions.search_vt_action)
 
-        if pe_tree.tree.have_capstone and self.valid_va and self.offset != 0:
+        if pe_tree.runtime.HAVE_CAPSTONE and self.valid_va and self.offset != 0:
             actions.actions.append(actions.disassemble_action)
 
         actions.actions.append(actions.addressing_menu)
@@ -200,8 +200,8 @@ class CommonStandardItem(QtGui.QStandardItem):
         actions.show_menu()
 
     def paint(self, painter, option, index):
-        if self.valid_va != False and self.offset > 0:
-            if self.offset >= self.tree.image_base or self.tree.show_rva == True:
+        if self.valid_va and self.offset > 0:
+            if self.offset >= self.tree.image_base or self.tree.show_rva:
                 self.setText("0x{:0{w}x}{}".format(self.offset, self.resolve(self.offset), w=self.width))
             else:
                 self.setText("0x{:0{w}x}{}".format(self.tree.image_base + self.offset, self.resolve(self.offset), w=self.width))
@@ -215,7 +215,7 @@ class CommonStandardItem(QtGui.QStandardItem):
 
         # Resolve section name
         for section in self.tree.pe.sections:
-            if address >= section.VirtualAddress and address < section.VirtualAddress + section.Misc_VirtualSize:
+            if section.VirtualAddress <= address < section.VirtualAddress + section.Misc_VirtualSize:
                 if sys.version_info > (3,):
                     printable_bytes = [ord(i) for i in string.printable if i not in string.whitespace]
 
@@ -238,8 +238,8 @@ class PEFileItem(CommonStandardItem):
 
 class RatioItem(CommonStandardItem):
     """Extended CommonStandardItem class for displaying ratios"""
-    
-    def __init__(self, tree, **kwargs): 
+
+    def __init__(self, tree, **kwargs):
         """Initialise super and store offset/size"""
         super(RatioItem, self).__init__(tree, name="{:.2f}%".format(float(100.0 / float(tree.size)) * float(kwargs.get("size", 0))), **kwargs)
 
@@ -287,7 +287,7 @@ class RatioItem(CommonStandardItem):
         painter.setFont(self.font())
         painter.setPen(pen)
         painter.drawText(QtCore.QRect(x, y, int(width / 2), height), QtCore.Qt.AlignCenter, index.data())
- 
+
         return True
 
     def context_menu(self, actions):
@@ -298,13 +298,13 @@ class RatioItem(CommonStandardItem):
 
 class SizeItem(CommonStandardItem):
     """Extended CommonStandardItem class for displaying sizes"""
-   
-    def __init__(self, tree, **kwargs): 
+
+    def __init__(self, tree, **kwargs):
         """Initialise super and store offset/size"""
         size = kwargs.get("size", 0)
         name = pe_tree.utils.human_readable_filesize(size)
 
-        if kwargs.get("show_hex", False) == True:
+        if kwargs.get("show_hex", False):
             name = "0x{:0{w}x} {}".format(size, name, w=kwargs.get("width", tree.ptr_size))
 
         kwargs.update(name=name)
@@ -319,7 +319,7 @@ class SizeItem(CommonStandardItem):
 
 class SaveablePEFileItem(PEFileItem):
     """Extended PEFileItem class for saving items"""
-    
+
     def __init__(self, tree, **kwargs):
         """Initialise super and store offset/size"""
         if not kwargs.get("filename", False):
@@ -340,7 +340,7 @@ class SaveablePEFileItem(PEFileItem):
 
 class InformationItem(CommonStandardItem):
     """Extended CommonStandardItem class for displaying information"""
-    
+
     def __init__(self, tree, **kwargs):
         """Initialise super and store offset/size"""
         super(InformationItem, self).__init__(tree, **kwargs)
@@ -361,7 +361,7 @@ class InformationItem(CommonStandardItem):
 
 class WarningItem(CommonStandardItem):
     """Extended CommonStandardItem class for displaying warnings"""
-    
+
     def __init__(self, tree, **kwargs):
         """Initialise super and store offset/size"""
         super(WarningItem, self).__init__(tree, **kwargs)
@@ -382,7 +382,7 @@ class WarningItem(CommonStandardItem):
 
 class ErrorItem(CommonStandardItem):
     """Extended CommonStandardItem class for displaying warnings"""
-    
+
     def __init__(self, tree, **kwargs):
         """Initialise super and store offset/size"""
         super(ErrorItem, self).__init__(tree, **kwargs)
@@ -403,13 +403,13 @@ class ErrorItem(CommonStandardItem):
 
 class HeaderItem(CommonStandardItem):
     """Extended CommonStandardItem class for displaying headers with icons"""
-    
+
     def __init__(self, tree, **kwargs):
         """Initialise super"""
         super(HeaderItem, self).__init__(tree, **kwargs)
 
         icon = kwargs.get("icon", None)
-        if icon != None:
+        if icon is not None:
             self.setIcon(tree.form.widget.style().standardIcon(getattr(QtWidgets.QStyle, icon)))
 
         # # Bold/Cylance green
@@ -422,12 +422,12 @@ class HeaderItem(CommonStandardItem):
         """Item right clicked"""
         actions.actions.append(actions.expand_all_action)
 
-        if self.is_root != False and self.tree.dumped != False:
+        if self.is_root:
             actions.actions.append(actions.save_dump_action)
 
         actions.actions.append(actions.copy_action)
 
-        if self.is_root != False:
+        if self.is_root:
             actions.actions.append(actions.remove_action)
             actions.actions.append(actions.add_pe_menu)
             actions.actions.append(actions.options_menu)
@@ -443,7 +443,7 @@ class SaveableHeaderItem(HeaderItem):
             kwargs["filename"] = kwargs.get("name", "")
 
         super(SaveableHeaderItem, self).__init__(tree, **kwargs)
-    
+
         self.setIcon(tree.form.widget.style().standardIcon(QtWidgets.QStyle.SP_DialogSaveButton))
 
     def context_menu(self, actions):
@@ -466,7 +466,7 @@ class NoItem(CommonStandardItem):
 
 class EntropyItem(CommonStandardItem):
     """Extended CommonStandardItem class for setting entropy"""
-    
+
     def __init__(self, tree, value):
         """Initialise super"""
         super(EntropyItem, self).__init__(tree, name="{0:f}".format(value))

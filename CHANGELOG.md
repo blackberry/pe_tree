@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.28](/../tags/1.0.28) - 2020-10-02
+
+### Added
+
+- [Rekall](http://www.rekall-forensic.com/) integration
+- [.gitignore](.gitignore) file
+
+### Changed
+
+- Tidied runtime interface
+- Renamed reconstructed imports section from .idata to .pe_tree
+
+### Fixed
+
+- Certificate parsing
+- Improved PE dumping/import reconstruction
+- pylint updates
+
 ## [1.0.27](/../tags/1.0.27) - 2020-05-20
 
 ### Added

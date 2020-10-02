@@ -32,14 +32,15 @@ import pefile
 
 # IDA imports
 try:
+    import idaapi
     import ida_idaapi
     import idc
     import idautils
     import ida_bytes
 
-    have_ida = True
+    HAVE_IDA = True
 except ImportError:
-    have_ida = False
+    HAVE_IDA = False
 
 # Qt imports
 from PyQt5 import QtWidgets, Qt
@@ -51,12 +52,12 @@ import pe_tree.dump_pe
 
 class CommonStandardItemContextMenu():
     """Context menu actions for pe_tree.qstandarditems.CommonStandardItem
-    
+
     Instantiate once and re-use for each tree item right-click action by calling new_menu().
 
     Args:
         form (pe_tree.form): PE Tree form
-        
+
    """
 
     def __init__(self, form):
@@ -93,7 +94,7 @@ class CommonStandardItemContextMenu():
         self.addressing_menu.addAction(self.va_action)
         self.about_action = QtWidgets.QAction("About", form.widget)
 
-        if have_ida == False:
+        if not HAVE_IDA:
             self.add_pe_menu.menuAction().setVisible(False)
 
         self.save_action = QtWidgets.QAction(style.standardIcon(QtWidgets.QStyle.SP_DialogSaveButton), "Save", form.widget)
@@ -114,7 +115,7 @@ class CommonStandardItemContextMenu():
         self.options_menu.addAction(self.toggle_enable_dump_action)
         self.options_menu.addAction(self.toggle_recalculate_pe_checksum_action)
 
-        if have_ida == False:
+        if not HAVE_IDA:
             self.options_menu.menuAction().setVisible(False)
 
         # Connect triggers
@@ -170,7 +171,7 @@ class CommonStandardItemContextMenu():
                 self.menu.addMenu(action)
                 visible += 1 if action.menuAction().isVisible() else 0
 
-        if have_ida != False:
+        if HAVE_IDA:
             # Add about to IDA context menu
             self.menu.addSeparator()
             self.menu.addAction(self.about_action)
@@ -189,14 +190,14 @@ class CommonStandardItemContextMenu():
 
         # Set addressing checkboxes
         self.rva_action.setChecked(self.item.tree.show_rva)
-        self.va_action.setChecked(True if self.item.tree.show_rva == False else False)
+        self.va_action.setChecked(not self.item.tree.show_rva)
 
         # Show the menu
         self.menu.exec_(self.point)
 
     def new_menu(self, form, point, item, index):
         """Initialise a new context menu upon right clicking the tree view
-        
+
         Args:
             form (pe_tree.form.PETreeForm): PE Tree form
             point (QPoint): Mouse click co-ordinates
@@ -219,7 +220,7 @@ class CommonStandardItemContextMenu():
 
     def toggle_option(self, section, option):
         """Toggle boolean config option
-        
+
         Args:
             section (str): Section name
             option (str): Option name
@@ -251,8 +252,9 @@ class CommonStandardItemContextMenu():
         """Find PE root item in list"""
         for tree in self.form.tree_roots:
             if self.item.text() == tree.filename:
-                if tree.org_data != None:
-                    pe_tree.dump_pe.DumpPEForm(pefile.PE(data=tree.org_data), tree.image_base, tree.size, tree.filename, tree.ptr_size, self.form).invoke()
+                if tree.org_data is not None:
+                    # The PE may have already been dumped, so use the original data
+                    pe_tree.dump_pe.DumpPEForm(pefile.PE(data=tree.org_data), tree.image_base, tree.size, "{}.dmp".format(tree.filename), tree.ptr_size, self.form).invoke()
 
     def expand_all(self):
         """Expand all nodes beneath the selected node"""
@@ -290,6 +292,14 @@ class CommonStandardItemContextMenu():
 
     def search_idb(self):
         """Search IDB for possible MZ/PE headers"""
+        # Determine pointer display width
+        info = idaapi.get_inf_structure()
+        
+        if info.is_64bit():
+            width = 16
+        else:
+            width = 8
+
         # Search all segments
         for seg in idautils.Segments():
             s = idc.get_segm_start(seg)
@@ -312,9 +322,9 @@ class CommonStandardItemContextMenu():
                         # Check for PE magic
                         if ida_bytes.get_word(addr + e_lfanew) == 0x4550:
                             # Found possible MZ/PE file
-                            self.form.runtime.log("0x{:08x} - {}".format(addr, idc.get_segm_name(s)))
+                            self.form.runtime.log("0x{:0{w}x} - {}".format(addr, idc.get_segm_name(s), w=width))
 
-                            self.form.map_pe(image_base=addr)
+                            self.form.map_pe(image_base=addr, filename="{} - 0x{:0{w}x}".format(idc.get_segm_name(s), addr, w=width))
 
                 # Resume search from next address
                 addr += 1

@@ -20,6 +20,9 @@
 import os
 import sys
 
+# Qt imports
+from PyQt5 import QtCore, QtWidgets
+
 # IDAPython imports
 import idaapi
 import ida_idaapi
@@ -28,9 +31,6 @@ import ida_bytes
 import ida_name
 import ida_kernwin
 import idautils
-
-# Qt imports
-from PyQt5 import QtCore, QtWidgets
 import sip
 
 # PE Tree imports
@@ -38,7 +38,7 @@ if "pe_tree" in sys.modules:
     # Reload all PE Tree modules as IDA will keep them loaded
     try:
         from importlib import reload
-    except:
+    except ImportError:
         from imp import reload
 
     try:
@@ -73,13 +73,9 @@ class IDARuntime(pe_tree.runtime.Runtime):
         self.ret = idaapi.get_user_idadir()
         return self.ret
 
-    def get_script_dir(self):
-        self.ret = os.path.dirname(os.path.realpath(pe_tree.info.__file__))
-        return self.ret
-
     def ask_file(self, filename, caption, filter="", save=False):
         """Open/save file dialog"""
-        if save == False:
+        if not save:
             # Open file dialog
             self.ret = ida_kernwin.ask_file(0, os.path.basename(str(filename)), str(caption))
         else:
@@ -107,9 +103,12 @@ class IDARuntime(pe_tree.runtime.Runtime):
 
         return self.ret
 
-    @QtCore.pyqtSlot(object)
-    def calc_pe_size(self, image_base):
-        # Blind guess at PE size based on contigious segments
+    def _calc_pe_size(self, image_base):
+        # Blind guess at PE size based on contiguous segments
+        if idc.get_segm_end(image_base) == ida_idaapi.BADADDR:
+            self.ret = 0
+            return self.ret
+        
         size = idc.get_segm_end(image_base) - image_base
         prev = idc.get_segm_start(image_base)
         offset = idc.get_next_seg(image_base)
@@ -117,7 +116,7 @@ class IDARuntime(pe_tree.runtime.Runtime):
         if offset == ida_idaapi.BADADDR:
             size = 0
 
-        # Size based on contigious segments by address
+        # Size based on contiguous segments by address
         while offset != ida_idaapi.BADADDR and idc.get_segm_end(prev) == offset:
             size += idc.get_segm_end(offset) - offset
             prev = offset
@@ -129,7 +128,7 @@ class IDARuntime(pe_tree.runtime.Runtime):
             offset = idc.get_next_seg(image_base)
             start = offset
 
-            # Size based on contigious segments by name
+            # Size based on contiguous segments by name
             while offset != ida_idaapi.BADADDR and idc.get_segm_name(prev) == name:
                 prev = offset
                 offset = idc.get_next_seg(offset)
@@ -137,6 +136,21 @@ class IDARuntime(pe_tree.runtime.Runtime):
             size = idc.get_segm_end(offset) - start
 
         self.ret = size
+        return self.ret
+
+    @QtCore.pyqtSlot(object, object)
+    def read_pe(self, image_base, size=0):
+        """Read PE image from IDB"""
+        # Calculate the size of the in-memory PE
+        self.ret = b""
+
+        size = self._calc_pe_size(image_base)
+
+        if size == 0:
+            return self.ret
+
+        # Read PE data from IDA database
+        self.ret = self.get_bytes(image_base, size)
         return self.ret
 
     @QtCore.pyqtSlot(object, object)
@@ -152,7 +166,6 @@ class IDARuntime(pe_tree.runtime.Runtime):
         return self.ret
 
     @QtCore.pyqtSlot(object)
-    @QtCore.pyqtSlot(int)
     def get_word(self, offset):
         """Read word from IDB"""
         self.ret = ida_bytes.get_word(offset)
@@ -185,11 +198,7 @@ class IDARuntime(pe_tree.runtime.Runtime):
     @QtCore.pyqtSlot(object)
     def is_writable(self, offset):
         """Determine if memory address is writable"""
-        self.ret = False
-
-        segment = idaapi.getseg(offset)
-        
-        self.ret = True if segment.perm & idaapi.SEGPERM_WRITE else False
+        self.ret = bool(idaapi.getseg(offset).perm & idaapi.SEGPERM_WRITE)
         return self.ret
 
     @QtCore.pyqtSlot(object)
@@ -305,44 +314,10 @@ class IDARuntime(pe_tree.runtime.Runtime):
     @QtCore.pyqtSlot()
     def get_names(self):
         self.ret = list(idautils.Names())
-        return self.ret 
-
-    @QtCore.pyqtSlot(object)
-    def get_mnemonic(self, offset):
-        """Get opcode mnemonic for given offset"""
-        self.ret = idc.print_insn_mnem(offset)
         return self.ret
 
-    @QtCore.pyqtSlot(object)
-    def get_opcode_length(self, offset):
-        """Get opcode length for given offset"""
-        self.ret = idc.get_item_size(offset)
-        return self.ret
-
-    @QtCore.pyqtSlot(object)
-    def get_opcode_omem(self, offset):
-        """Get opcode's direct memory address"""
-        mnem = self.get_mnemonic(offset).lower()
-        ptr = 0
-
-        if mnem in ["call", "push", "jmp"]:
-            if idc.get_operand_type(offset, 0) == idc.o_mem:
-                ptr = idc.get_operand_value(offset, 0)
-        elif mnem in ["mov", "lea"]:
-            if idc.get_operand_type(offset, 0) == idc.o_reg and idc.get_operand_type(offset, 1) == idc.o_mem:
-                ptr = idc.get_operand_value(offset, 1)
-
-        self.ret = ptr
-        return self.ret
-
-    @QtCore.pyqtSlot(object)
-    def next_addr(self, offset):
-        """Find next address in IDB"""
-        self.ret = ida_bytes.next_addr(offset)
-        return self.ret
-
-    @QtCore.pyqtSlot(object, object, object)
-    def find_iat_ptrs(self, image_base, size, get_word):
+    @QtCore.pyqtSlot(object, object, object, object)
+    def find_iat_ptrs(self, pe, image_base, size, get_word):
         """Find all likely IAT pointers"""
         iat_ptrs = []
 
@@ -350,11 +325,22 @@ class IDARuntime(pe_tree.runtime.Runtime):
 
         while next_offset < image_base + size:
             offset = next_offset
-            next_offset = self.next_addr(offset)
+            next_offset = ida_bytes.next_addr(offset)
 
-            # Get address from opcode with memory operand
-            ptr = self.get_opcode_omem(offset)
+            # Attempt to read the current instruction's effective memory address operand (if present)
+            mnem = idc.print_insn_mnem(offset).lower()
+            ptr = 0
 
+            if mnem in ["call", "push", "jmp"]:
+                if idc.get_operand_type(offset, 0) == idc.o_mem:
+                    # Get memory offset for branch instructions
+                    ptr = idc.get_operand_value(offset, 0)
+            elif mnem in ["mov", "lea"]:
+                if idc.get_operand_type(offset, 0) == idc.o_reg and idc.get_operand_type(offset, 1) == idc.o_mem:
+                    # Get memory offset for mov/lea instructions
+                    ptr = idc.get_operand_value(offset, 1)
+
+            # Does the instruction's memory address operand seem somewhat valid?!
             if ptr < 0x1000:
                 continue
 
@@ -362,69 +348,19 @@ class IDARuntime(pe_tree.runtime.Runtime):
             iat_offset = get_word(ptr)
 
             # Ignore offset if it is in our image
-            if iat_offset >= image_base and iat_offset < image_base + size:
+            if image_base <= iat_offset <= image_base + size:
                 continue
 
-            # Get module and api name for offset
+            # Get module and API name for offset
             module, api = self.resolve_address(iat_offset)
 
             # Ignore the offset if it is in a debug segment or stack etc
             if api and module and module.endswith(".dll"):
                 if not iat_offset in iat_ptrs:
-                    # Add IAT offset to list
-                    iat_ptrs.append((iat_offset, offset, module, api))
+                    # Add IAT offset, address to patch, module name and API name to list
+                    iat_ptrs.append((iat_offset, offset + idc.get_item_size(offset) - 4, module, api))
 
         self.ret = iat_ptrs
-        return self.ret
-
-    @QtCore.pyqtSlot(object, object, object, object, object, object)
-    def patch_iat_ptrs(self, image_base, size, iat_ptrs, name_to_iat, get_word, set_word):
-        """Find and patch all IAT pointers"""
-        patched = []
-
-        next_offset = image_base
-
-        while next_offset < image_base + size:
-            offset = next_offset
-            next_offset = self.next_addr(offset)
-
-            # Resolve pointer from memory operand
-            ptr = self.get_opcode_omem(offset)
-
-            if ptr < 0x1000:
-                continue
-
-            # Get IAT pointer
-            iat_offset = get_word(ptr)
-
-            # Ignore offset if it is in our image
-            if iat_offset >= image_base and iat_offset < image_base + size:
-                continue
-
-            for iat_ptr, _, module, api in iat_ptrs:
-                # Is IAT pointer in list?
-                if iat_offset != iat_ptr:
-                    continue
-
-                # Get opcode bytes
-                opcode = self.get_bytes(offset, self.get_opcode_length(offset))
-
-                if len(opcode) <= 4:
-                    break
-
-                try:
-                    # Patch IAT offset
-                    offset += len(opcode) - 4
-
-                    if offset not in patched:
-                        set_word(offset - image_base, image_base + name_to_iat["{}!{}".format(module, api)])
-                        patched.append(offset)
-
-                    break
-                except KeyError:
-                    break
-
-        self.ret = patched
         return self.ret
 
 class pe_tree_plugin_t(idaapi.plugin_t):
