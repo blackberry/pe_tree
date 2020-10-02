@@ -217,7 +217,7 @@ Finally, the BASERELOC, BOUND_IMPORT and SECURITY data directories are marked nu
 
 Using the above approach it is possible to dump many in-memory PE files that have either been unpacked, remotely injected, reflectively loaded or hollowed etc.
 
-## Rekall plugin
+## Rekall
 ![PE Tree Rekall plugin](./doc/images/pe_tree_rekall.png)
 ### Requirements
 - Python 3+
