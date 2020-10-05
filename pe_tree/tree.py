@@ -494,7 +494,7 @@ class PETree(QtCore.QRunnable):
 
                     section_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name="Entropy"), pe_tree.qstandarditems.EntropyItem(self, section_hashes["entropy"])])
                     section_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name="SHA256"), pe_tree.qstandarditems.PEFileItem(self, name=section_hashes["sha256"])])
-                    section_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name="MD5"), pe_tree.qstandarditems.PEFileItem(self, name=section_hashes["md5"], vt_query="section:\"{}\"")])
+                    section_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name="MD5"), pe_tree.qstandarditems.PEFileItem(self, name=section_hashes["md5"], vt_query="sectionmd5:\"{}\"")])
                     section_item.appendRow([pe_tree.qstandarditems.PEFileItem(self, name="Ratio"), pe_tree.qstandarditems.RatioItem(self, size=section.SizeOfRawData, offset=section.PointerToRawData, entropy=section_hashes["entropy"])])
 
                     sections_item.appendRow([section_item, pe_tree.qstandarditems.PEFileItem(self, name="", offset=section.VirtualAddress)])
