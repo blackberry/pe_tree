@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.29](/../tags/1.0.29) - 2020-10-05
+
+### Fixed
+
+- Fixed section MD5 VT search query
+
 ## [1.0.28](/../tags/1.0.28) - 2020-10-02
 
 ### Added
