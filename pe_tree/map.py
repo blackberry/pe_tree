@@ -45,8 +45,8 @@ class FileRegion():
         self.end = end
         self.rva = rva
         self.item = item
-        self.rect = QtCore.QRect(0, 0, 0, 0)
-        self.colour = QtGui.QColor(0, 0, 0)
+        self.rect = None
+        self.colour = None
         self.hover = False
 
         if self.end == 0:
@@ -119,7 +119,7 @@ class PEMap(QtWidgets.QGroupBox):
         for region in sorted(regions, key=lambda region: (region.start)):
             self.layout.addWidget(PEMapLabel(region, next(self.colours), self.file_size, parent=self))
 
-class PEMapLabel(QtWidgets.QLabel):
+class PEMapLabel(QtWidgets.QWidget):
     """PE map label widget
 
     Args:
@@ -130,24 +130,25 @@ class PEMapLabel(QtWidgets.QLabel):
 
     """
     def __init__(self, region, colour, file_size, parent=None):
-        super(PEMapLabel, self).__init__(str(region.name), parent=parent)
+        super(PEMapLabel, self).__init__(parent=parent)
 
         self.region = region
         self.colour = colour
         self.file_size = file_size
 
+        # Initialise self
         self.setMouseTracking(True)
         self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.context_menu)
         self.setMinimumHeight(30)
-        self.setAlignment(QtCore.Qt.AlignCenter)
-        self.setFont(QtGui.QFont("Courier"))
 
-        # Set foreground text colour
-        p = QtGui.QPalette()
-        p.setBrush(QtGui.QPalette.Active, QtGui.QPalette.WindowText, QtGui.QBrush(QtGui.QColor("white")))
-        p.setBrush(QtGui.QPalette.Inactive, QtGui.QPalette.WindowText, QtGui.QBrush(QtGui.QColor("white")))
-        self.setPalette(p)
+        # Initialise font
+        families = ["Consolas", "Monospace", "Courier"]
+
+        for family in families:
+            family = family.strip()
+            if family in QtGui.QFontDatabase().families():
+                self.setFont(QtGui.QFont(family))
 
     def paintEvent(self, event):
         """Draw the PE map label
@@ -156,11 +157,13 @@ class PEMapLabel(QtWidgets.QLabel):
             event (QPaintEvent): Paint event
 
         """
-        # Get sizes from the paint event
-        r = event.rect()
+        super(PEMapLabel, self).paintEvent(event)
 
-        w = r.width()
-        h = r.height()
+        # Get size of the label rect
+        r = event.region().boundingRect()
+
+        w = self.width()
+        h = self.height()
         y = r.y()
         x = r.x()
 
@@ -169,48 +172,45 @@ class PEMapLabel(QtWidgets.QLabel):
         region = self.region
 
         # Same colour but with alpha
-        colour_alpha = QtGui.QColor(colour.red(), colour.green(), colour.blue(), alpha=150)
+        colour_alpha = QtGui.QColor(colour.red(), colour.green(), colour.blue(), alpha=100 if region.hover is True else 175)
 
-        colour, colour_alpha = colour_alpha, colour
+        # Expand the font on mouse over
+        font = self.font()
+        font.setWeight(QtGui.QFont.Medium)
 
         if region.hover:
-            # Invert the colours on mouse over
-            colour, colour_alpha = colour_alpha, colour
-
-            # Set bold and increase font size
-            font = self.font()
-            font.setPointSize(10)
-            font.setBold(True)
-            self.setFont(font)
+            font.setStretch(QtGui.QFont.Expanded)
         else:
-            # Restore font
-            font = self.font()
-            font.setPointSize(8)
-            font.setBold(False)
-            self.setFont(font)
-
-        painter = QtGui.QPainter(self)
+            font.setStretch(QtGui.QFont.SemiExpanded)
 
         # Draw the main rect
+        painter = QtGui.QPainter(self)
+
         region.rect = QtCore.QRect(x, y, w, h)
         painter.setPen(QtCore.Qt.NoPen)
-        painter.setBrush(QtGui.QBrush(QtGui.QColor(colour_alpha), QtCore.Qt.SolidPattern))
+        painter.setBrush(QtGui.QBrush(QtGui.QColor(colour), QtCore.Qt.SolidPattern))
         painter.drawRect(region.rect)
 
-        # Determine width per byte of filesize
+        # Determine width per byte of file size
         delta = float(w) / float(max(self.file_size, region.start + region.size))
 
-        # Draw the ratio portion
+        # Draw the ratio portion over a white background
         painter.setBrush(QtGui.QBrush(QtGui.QColor("white"), QtCore.Qt.SolidPattern))
         painter.drawRect(x + int(region.start * delta), y, max(int(region.size * delta), 2), h)
 
-        painter.setBrush(QtGui.QBrush(QtGui.QColor(colour), QtCore.Qt.SolidPattern))
+        painter.setBrush(QtGui.QBrush(QtGui.QColor(colour_alpha), QtCore.Qt.SolidPattern))
         painter.drawRect(x + int(region.start * delta), y, max(int(region.size * delta), 2), h)
 
-        painter.end()
+        # Draw drop shadow text
+        painter.setFont(font)
+        painter.setPen(QtGui.QPen(QtGui.QColor(63, 63, 63, 100)))
+        painter.drawText(QtCore.QRect(x + 1, y + 1, w, h), QtCore.Qt.AlignCenter, str(region.name))
 
         # Write the region name
-        super(PEMapLabel, self).paintEvent(event)
+        painter.setPen(QtGui.QPen(QtGui.QColor(244, 244, 250)))
+        painter.drawText(QtCore.QRect(x, y, w, h), QtCore.Qt.AlignCenter, str(region.name))
+
+        painter.end()
 
     def mouseMoveEvent(self, event):
         """Set region hover state and redraw the PE map label
@@ -280,6 +280,14 @@ class PEMapLabel(QtWidgets.QLabel):
 
         item.context_menu(form.context_menu_actions.new_menu(form, point, item, index))
 
+class PEMapScrollArea(QtWidgets.QScrollArea):
+    """PE map scroll area widget"""
+    def eventFilter(self, obj, event):
+        if event.type() is QtCore.QEvent.MouseMove:
+            # Force the map view to update when the mouse moves over the scrollbar
+            self.widget().update()
+
+        return super(PEMapScrollArea, self).eventFilter(obj, event)
 
 #
 # The following code is gratefully borrowed from:

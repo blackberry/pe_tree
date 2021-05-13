@@ -24,6 +24,9 @@ import sys
 from PyQt5 import QtCore, QtWidgets
 
 # IDAPython imports
+
+# pylint: disable=import-error
+
 import idaapi
 import ida_idaapi
 import idc
@@ -54,6 +57,7 @@ if "pe_tree" in sys.modules:
         reload(pe_tree.qstandarditems)
         reload(pe_tree.tree)
         reload(pe_tree.utils)
+        reload(pe_tree.dialogs)
     except NameError:
         pass
 
@@ -63,10 +67,10 @@ import pe_tree.info
 
 class IDARuntime(pe_tree.runtime.Runtime):
     """IDA runtime callbacks"""
-    def __init__(self, widget):
+    def __init__(self, widget, args):
         # Load configuration
         self.config_file = os.path.join(self.get_temp_dir(), "pe_tree.ini")
-        super(IDARuntime, self).__init__(widget)
+        super(IDARuntime, self).__init__(widget, args)
 
     def get_temp_dir(self):
         """Get path to temporary directory"""
@@ -89,11 +93,12 @@ class IDARuntime(pe_tree.runtime.Runtime):
         return self.ret
 
     def show_widget(self):
-        """Display the widget"""
+        """Display the PE Tree widget"""
         self.ret = idaapi.display_widget(self.widget, (idaapi.PluginForm.WOPN_TAB | idaapi.PluginForm.WOPN_MENU | idaapi.PluginForm.WOPN_RESTORE | idaapi.PluginForm.WOPN_PERSIST))
 
         return self.ret
 
+    @QtCore.pyqtSlot(object, int)
     def jumpto(self, item, offset):
         """Jump to offset in IDA view"""
         try:
@@ -103,60 +108,15 @@ class IDARuntime(pe_tree.runtime.Runtime):
 
         return self.ret
 
-    def _calc_pe_size(self, image_base):
-        # Blind guess at PE size based on contiguous segments
-        if idc.get_segm_end(image_base) == ida_idaapi.BADADDR:
-            self.ret = 0
-            return self.ret
-        
-        size = idc.get_segm_end(image_base) - image_base
-        prev = idc.get_segm_start(image_base)
-        offset = idc.get_next_seg(image_base)
-
-        if offset == ida_idaapi.BADADDR:
-            size = 0
-
-        # Size based on contiguous segments by address
-        while offset != ida_idaapi.BADADDR and idc.get_segm_end(prev) == offset:
-            size += idc.get_segm_end(offset) - offset
-            prev = offset
-            offset = idc.get_next_seg(offset)
-
-        if size <= 0x1000:
-            name = idc.get_segm_name(image_base)
-            prev = idc.get_segm_start(image_base)
-            offset = idc.get_next_seg(image_base)
-            start = offset
-
-            # Size based on contiguous segments by name
-            while offset != ida_idaapi.BADADDR and idc.get_segm_name(prev) == name:
-                prev = offset
-                offset = idc.get_next_seg(offset)
-
-            size = idc.get_segm_end(offset) - start
-
-        self.ret = size
-        return self.ret
+    @QtCore.pyqtSlot(str)
+    def log(self, output):
+        """Print to output"""
+        print(output)
 
     @QtCore.pyqtSlot(object, object)
-    def read_pe(self, image_base, size=0):
-        """Read PE image from IDB"""
-        # Calculate the size of the in-memory PE
-        self.ret = b""
-
-        size = self._calc_pe_size(image_base)
-
-        if size == 0:
-            return self.ret
-
-        # Read PE data from IDA database
-        self.ret = self.get_bytes(image_base, size)
-        return self.ret
-
-    @QtCore.pyqtSlot(object, object)
-    def get_bytes(self, start, end):
+    def get_bytes(self, start, size):
         """Read bytes from IDB"""
-        self.ret = idc.get_bytes(start, end)
+        self.ret = idc.get_bytes(start, size)
         return self.ret
 
     @QtCore.pyqtSlot(object)
@@ -218,7 +178,7 @@ class IDARuntime(pe_tree.runtime.Runtime):
                 if segment_name.startswith(symbol_split[0].lower()):
                     new_name = ""
                     for i in range(0, len(symbol_split)):
-                        new_name = "{}.dll".format("_".join(names[0:i]))
+                        new_name = "{}.dll".format("_".join(symbol_split[0:i]))
                         if new_name == segment_name:
                             break
 
@@ -363,6 +323,66 @@ class IDARuntime(pe_tree.runtime.Runtime):
         self.ret = iat_ptrs
         return self.ret
 
+    @QtCore.pyqtSlot(object)
+    def find_pe(self, cursor=False):
+        """Search IDB for possible MZ/PE headers"""
+        info = idaapi.get_inf_structure()
+
+        mz_headers = []
+
+        # Check current cursor for MZ/PE?
+        if cursor:
+            # Get IDA cursor address
+            addr = idc.here()
+
+            # Get segment and end address
+            s = idaapi.getseg(addr)
+            e = idc.get_segm_end(addr)
+
+            # Check for MZ magic
+            if ida_bytes.get_word(addr) == 0x5a4d:
+                # Ensure the PE header is in the segment
+                e_lfanew = ida_bytes.get_dword(addr + 0x3c)
+
+                if addr + e_lfanew + 1 < e:
+                    # Check for PE magic
+                    if ida_bytes.get_word(addr + e_lfanew) == 0x4550:
+                        # Found possible MZ/PE header
+                        mz_headers.append([addr, idc.get_segm_name(addr), info.is_64bit()])
+
+            self.ret = mz_headers
+            return self.ret
+
+        # Search all segments
+        for seg in idautils.Segments():
+            s = idc.get_segm_start(seg)
+            e = idc.get_segm_end(seg)
+            addr = s
+
+            while True:
+                # Find first byte of MZ header
+                addr = ida_bytes.find_byte(addr, e-addr, 0x4d, 0)
+
+                if addr == ida_idaapi.BADADDR or addr >= e:
+                    break
+
+                # Check for MZ magic
+                if ida_bytes.get_word(addr) == 0x5a4d:
+                    # Ensure the PE header is in the segment
+                    e_lfanew = ida_bytes.get_dword(addr + 0x3c)
+
+                    if addr + e_lfanew + 1 < e:
+                        # Check for PE magic
+                        if ida_bytes.get_word(addr + e_lfanew) == 0x4550:
+                            # Found possible MZ/PE header
+                            mz_headers.append([addr, idc.get_segm_name(s), info.is_64bit()])
+
+                # Resume search from next address
+                addr += 1
+
+        self.ret = mz_headers
+        return self.ret
+
 class pe_tree_plugin_t(idaapi.plugin_t):
     """Main IDAPro plugin class for PE Tree"""
     wanted_name = pe_tree.info.__title__
@@ -373,41 +393,44 @@ class pe_tree_plugin_t(idaapi.plugin_t):
     wanted_hotkey = ""
     flags = 0
 
-    def init(self):
+    def __init__(self):
         self.pe_tree_form = None
 
+    def init(self):
+        """Initialise PE Tree IDA plugin"""
         return ida_idaapi.PLUGIN_KEEP
 
     def term(self):
+        """Terminate PE Tree IDA plugin"""
         # Wait for plugin threads to complete
         if self.pe_tree_form:
             self.pe_tree_form.wait_for_threads()
 
     def run(self, arg):
+        """Run PE Tree IDA plugin"""
         # Get form and widget
         form = idaapi.create_empty_widget(self.comment)
         widget = sip.wrapinstance(int(form), QtWidgets.QWidget)
 
-        runtime = IDARuntime(form)
+        runtime = IDARuntime(form, {})
+
+        self.pe_tree_form = pe_tree.form.PETreeForm(widget, None, runtime)
 
         # Try to find the IDA input file
         filename = idaapi.get_input_file_path()
 
-        if not filename:
-            return
-
-        if not os.path.isfile(filename):
-            filename = os.path.basename(filename)
-
+        if filename:
             if not os.path.isfile(filename):
-                filename = runtime.ask_file(os.path.basename(filename), "Where is the input file?")
+                filename = os.path.basename(filename)
 
-        if not filename:
-            return
+                if not os.path.isfile(filename):
+                    filename = runtime.ask_file(os.path.basename(filename), "Where is the input file?")
 
-        # Map input file
-        self.pe_tree_form = pe_tree.form.PETreeForm(widget, None, runtime)
-        self.pe_tree_form.map_pe(image_base=idaapi.get_imagebase(), filename=filename)
+            if os.path.isfile(filename):
+                # Map input file
+                self.pe_tree_form.map_pe(image_base=idaapi.get_imagebase(), filename=filename)
+
+        self.pe_tree_form.treeview.setVisible(True)
         self.pe_tree_form.show()
 
 def PLUGIN_ENTRY():

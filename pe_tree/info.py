@@ -19,8 +19,8 @@
 """PE Tree information"""
 
 __author__ = "Tom Bonner"
-__copyright__ = "Copyright © 2020 BlackBerry Limited."
-__version__ = "1.0.29"
+__copyright__ = "Copyright © 2021 BlackBerry Limited."
+__version__ = "1.0.30"
 __maintainer__ = "Tom Bonner"
 __email__ = "tbonner@blackberry.com"
 __license__ = "Apache License 2.0"

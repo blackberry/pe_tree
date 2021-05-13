@@ -20,14 +20,6 @@
 import os
 import io
 import sys
-import struct
-import builtins
-
-# pefile
-import pefile
-
-# Capstone imports
-import capstone
 
 # Qt imports
 from PyQt5 import QtCore, QtWidgets, QtGui
@@ -36,41 +28,23 @@ from PyQt5 import QtCore, QtWidgets, QtGui
 from rekall_lib import utils
 
 # PE Tree imports
-import pe_tree.__main__
+import pe_tree.window
 import pe_tree.runtime
 import pe_tree.form
 import pe_tree.info
 
+# pylint: disable=undefined-variable
+
 class RekallRuntime(pe_tree.runtime.Runtime):
-    """IDA runtime callbacks"""
-    def __init__(self, widget):
+    """Rekall runtime callbacks"""
+    def __init__(self, widget, args):
         # Load configuration
         self.config_file = os.path.join(self.get_temp_dir(), "pe_tree_rekall.ini")
-        super(RekallRuntime, self).__init__(widget)
-        
+        super(RekallRuntime, self).__init__(widget, args)
+
         # Initialise Rekall
         self.cc = session.plugins.cc()
         self.pedump = session.plugins.pedump()
-
-    def jumpto(self, item, offset):
-        """Disassemble using capstone"""
-        if item.tree.disasm:
-            for i in item.tree.disasm.disasm(item.get_data(size=0x100), offset):
-                item.tree.form.runtime.log("0x{:x}:\t{}\t{}".format(i.address, i.mnemonic, i.op_str))
-
-        self.ret = True
-        return self.ret
-
-    @QtCore.pyqtSlot(str)
-    def log(self, output):
-        """Append log message to the output view"""
-        output_view = self.pe_tree_form.output_stack.currentWidget()
-        if output_view:
-            output_view.append(output)
-            output_view.moveCursor(QtGui.QTextCursor.End)
-
-        self.ret = True
-        return self.ret
 
     @QtCore.pyqtSlot(object, object)
     def read_pe(self, image_base, size=0):
@@ -84,35 +58,15 @@ class RekallRuntime(pe_tree.runtime.Runtime):
         return self.ret
 
     @QtCore.pyqtSlot(object, object)
-    def get_bytes(self, start, end):
+    def get_bytes(self, start, size):
         """Read bytes from memory"""
         task = self.opaque["task"]
         if task:
             self.cc.SwitchProcessContext(self.opaque["task"])
 
-        self.ret = self.opaque["address_space"].read(start, end)
+        self.ret = self.opaque["address_space"].read(start, size)
         self.ret = b"" if self.ret is None else self.ret
         return self.ret
-
-    @QtCore.pyqtSlot(object)
-    def get_byte(self, offset):
-        """Read byte from memory"""
-        return self.get_bytes(offset, offset + 1)
-
-    @QtCore.pyqtSlot(object)
-    def get_word(self, offset):
-        """Read word from memory"""
-        return struct.unpack("<H", self.get_bytes(offset, 2))[0]
-
-    @QtCore.pyqtSlot(object)
-    def get_dword(self, offset):
-        """Read dword from memory"""
-        return struct.unpack("<I", self.get_bytes(offset, 4))[0]
-
-    @QtCore.pyqtSlot(object)
-    def get_qword(self, offset):
-        """Read qword from memory"""
-        return struct.unpack("<Q", self.get_bytes(offset, 8))[0]
 
     @QtCore.pyqtSlot(object)
     def is_writable(self, offset):
@@ -156,64 +110,6 @@ class RekallRuntime(pe_tree.runtime.Runtime):
         self.ret = (module, api)
         return self.ret
 
-    @QtCore.pyqtSlot(object, object, object, object)
-    def find_iat_ptrs(self, pe, image_base, size, get_word):
-        """Find all likely IAT pointers"""
-        # Initialise capstone
-        disasm = self.init_capstone(pe)
-        disasm.detail = True
-
-        iat_ptrs = []
-
-        # Traverse sections
-        for section in pe.sections:
-            # Is the section executable?
-            if not section.Characteristics & pefile.SECTION_CHARACTERISTICS["IMAGE_SCN_MEM_EXECUTE"]:
-                continue
-
-            # Does the section contain anything?
-            data = section.get_data()
-
-            if not data:
-                continue
-
-            # Disassemble section
-            for i in disasm.disasm(section.get_data(), image_base + section.VirtualAddress):
-                # Attempt to read the current instruction's effective memory address operand (if present)
-                ptr = 0
-
-                if i.mnemonic in ["call", "push", "jmp"]:
-                    if i.operands[0].type == capstone.x86.X86_OP_MEM:
-                        # Get memory offset for branch instructions
-                        ptr = i.operands[0].value.mem.disp
-                elif i.mnemonic in ["mov", "lea"]:
-                    if i.operands[0].type == capstone.x86.X86_OP_REG and i.operands[1].type == capstone.x86.X86_OP_MEM:
-                        # Get memory offset for mov/lea instructions
-                        ptr = i.operands[1].value.mem.disp
-
-                # Does the instruction's memory address operand seem somewhat valid?!
-                if ptr < 0x1000:
-                    continue
-
-                # Resolve pointer from memory operand
-                iat_offset = get_word(ptr)
-
-                # Ignore offset if it is in our image
-                if image_base <= iat_offset <= image_base + size:
-                    continue
-
-                # Get module and API name for offset
-                module, api = self.resolve_address(iat_offset)
-
-                # Ignore the offset if it is in a debug segment or stack etc
-                if api and module and module.endswith(".dll"):
-                    if not iat_offset in iat_ptrs:
-                        # Add IAT offset, address to patch, module name and API name to list
-                        iat_ptrs.append((iat_offset, i.address + len(i.bytes) - 4, module, api))
-
-        self.ret = iat_ptrs
-        return self.ret
-
 class ExpandableStandardItemModel(QtGui.QStandardItemModel):
     """Set expandable role on process items to force the drawing of expand/collapse arrows without child items present (allows for lazy loading of modules)"""
     ExpandableRole = QtCore.Qt.UserRole + 500
@@ -233,68 +129,12 @@ class ExpandableStandardItemModel(QtGui.QStandardItemModel):
 
         return super(ExpandableStandardItemModel, self).hasChildren(index)
 
-class HashableQStandardItem():
-    """Hashable QStandardItem wrapper for storing in a set()"""
-    def __init__(self, item):
-        self.item = item
-        self.args = item.data(QtCore.Qt.UserRole)
-
-    def __hash__(self):
-        """Filename is hash"""
-        return builtins.hash(self.args["filename"])
-
-    def __eq__(self, other):
-        """Test if items are equal"""
-        if not isinstance(other, type(self)):
-            return NotImplemented
-
-        return self.args["filename"] == other.item.data(QtCore.Qt.UserRole)["filename"]
-
-    def __ne__(self, other):
-        return not self.__eq__(other)
-
-class SelectProcess(QtWidgets.QDialog):
+class SelectProcess(pe_tree.dialogs.ModulePicker):
     """Process/module picker dialog"""
     def __init__(self, window, parent=None):
-        super(SelectProcess, self).__init__(parent)
+        super(SelectProcess, self).__init__(window, "Select process...", ["Name", "PID", "Image base"], model=ExpandableStandardItemModel, parent=parent)
 
-        self.window = window
-        self.items = set()
-
-        # Initialise the dialog
-        self.setWindowTitle("Select process...")
-
-        self.setMinimumWidth(400)
-        self.setMinimumHeight(600)
-
-        # Create the process/module tree view and model
-        self.treeview = QtWidgets.QTreeView()
-        self.model = ExpandableStandardItemModel(self.treeview)
-        self.model.setHorizontalHeaderLabels(["Name", "PID", "Image base"])
-        self.model.itemChanged.connect(self.item_changed)
-        self.treeview.setModel(self.model)
         self.treeview.expanded.connect(self.populate_modules)
-        self.treeview.setSizeAdjustPolicy(QtWidgets.QAbstractScrollArea.AdjustToContents)
-        self.treeview.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-
-        # Create the buttons
-        button_box = QtWidgets.QDialogButtonBox()
-        button_box.addButton("Dump", QtWidgets.QDialogButtonBox.AcceptRole)
-        button_box.addButton("Cancel", QtWidgets.QDialogButtonBox.RejectRole)
-
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-
-        # Create the layout
-        grid = QtWidgets.QGridLayout()
-        grid.setSpacing(10)
-
-        grid.addWidget(self.treeview, 0, 0)
-        grid.addWidget(button_box, 1, 0)
-
-        self.setLayout(grid)
-
-        self.populate_processes()
 
     def populate_processes(self):
         """Populate the tree view with processes"""
@@ -309,7 +149,7 @@ class SelectProcess(QtWidgets.QDialog):
                 continue
 
             # Create internal filename
-            filename = "{} ({}) - 0x{:#08x}".format(str(task.name), task.pid, image_base)
+            filename = "{} ({}) - {:#08x}".format(str(task.name), task.pid, image_base)
 
             # Create process tree view item
             process_item = QtGui.QStandardItem("{}".format(str(task.name)))
@@ -372,7 +212,7 @@ class SelectProcess(QtWidgets.QDialog):
             driver_item.setCheckable(True)
             driver_item.setCheckState(QtCore.Qt.Checked if parent.checkState() == QtCore.Qt.Checked else QtCore.Qt.Unchecked)
             if parent.checkState() == QtCore.Qt.Checked:
-                    self.items.add(HashableQStandardItem(driver_item))
+                self.items.add(pe_tree.qstandarditems.HashableQStandardItem(driver_item))
 
             parent.appendRow([driver_item, QtGui.QStandardItem("N/A"), QtGui.QStandardItem("0x{:0{w}x}".format(image_base & ptr_mask, w=ptr_width))])
 
@@ -407,33 +247,7 @@ class SelectProcess(QtWidgets.QDialog):
                 dll_item.setCheckable(True)
                 dll_item.setCheckState(QtCore.Qt.Checked if parent.checkState() == QtCore.Qt.Checked else QtCore.Qt.Unchecked)
                 if parent.checkState() == QtCore.Qt.Checked:
-                    self.items.add(HashableQStandardItem(dll_item))
-
-                parent.appendRow([dll_item, QtGui.QStandardItem("{}".format(task.pid)), QtGui.QStandardItem("0x{:0{w}x}".format(image_base & ptr_mask, w=ptr_width))])
-
-        return
-
-        # Iterate over loaded modules (via PEB in-order module list)
-        for module in task.get_load_modules():
-            process_offset = task_as.vtop(task.obj_offset)
-            if process_offset:
-                # Ensure the image base is non-null and not the parent process
-                image_base = int(module.DllBase) if int(module.DllBase) else 0
-
-                if image_base == 0 or image_base == int(task.Peb.ImageBaseAddress):
-                    continue
-
-                # Create internal filename
-                base_name = os.path.basename(utils.SmartUnicode(module.BaseDllName))
-                filename = "{} ({} - {}) - 0x{:0x}".format(utils.EscapeForFilesystem(base_name), task.name, task.pid, int(module.DllBase))
-
-                # Create DLL tree view item
-                dll_item = QtGui.QStandardItem("{}".format(utils.EscapeForFilesystem(base_name)))
-                dll_item.setData({"filename": filename, "task": task, "address_space": task_as, "image_base": image_base}, QtCore.Qt.UserRole)
-                dll_item.setCheckable(True)
-                dll_item.setCheckState(QtCore.Qt.Checked if parent.checkState() == QtCore.Qt.Checked else QtCore.Qt.Unchecked)
-                if parent.checkState() == QtCore.Qt.Checked:
-                    self.items.add(HashableQStandardItem(dll_item))
+                    self.items.add(pe_tree.qstandarditems.HashableQStandardItem(dll_item))
 
                 parent.appendRow([dll_item, QtGui.QStandardItem("{}".format(task.pid)), QtGui.QStandardItem("0x{:0{w}x}".format(image_base & ptr_mask, w=ptr_width))])
 
@@ -461,47 +275,10 @@ class SelectProcess(QtWidgets.QDialog):
         self.treeview.expand(index)
         self.treeview.resizeColumnToContents(0)
 
-    def item_changed(self, item):
-        """Record selected items in the tree view"""
-        if item.checkState() == QtCore.Qt.PartiallyChecked:
-            # Add to list of selected items
-            self.items.add(HashableQStandardItem(item))
-
-            # If parent item then unselect all children
-            if item.hasChildren():
-                for row in range(0, item.rowCount()):
-                    child = item.child(row)
-                    child.setCheckState(QtCore.Qt.Unchecked)
-                    self.items.discard(HashableQStandardItem(child))
-
-        elif item.checkState() == QtCore.Qt.Checked:
-            # Add to list of selected items
-            self.items.add(HashableQStandardItem(item))
-
-            # If parent item then select all children
-            if item.hasChildren():
-                for row in range(0, item.rowCount()):
-                    child = item.child(row)
-                    child.setCheckState(QtCore.Qt.Checked)
-                    self.items.add(HashableQStandardItem(child))
-
-            elif item.parent() is None:
-                # Expand the root item
-                self.treeview.setExpanded(item.index(), True)
-
-        elif item.checkState() == QtCore.Qt.Unchecked:
-            # Remove from list of selected items
-            self.items.discard(HashableQStandardItem(item))
-
-            # If parent item then unselect all children
-            if item.hasChildren():
-                for row in range(0, item.rowCount()):
-                    child = item.child(row)
-                    child.setCheckState(QtCore.Qt.Unchecked)
-                    self.items.discard(HashableQStandardItem(child))
-
     def invoke(self):
         """Display the select process/modules dialog"""
+        super(SelectProcess, self).invoke()
+
         # Has the user accepted, i.e. pressed "Dump"?
         if self.exec_() != 0:
             # Dump selected processes/modules
@@ -515,12 +292,11 @@ def main():
     """PE Tree Rekall script entry-point"""
     # Create PE Tree Qt application
     application = QtWidgets.QApplication(sys.argv)
-    window = pe_tree.__main__.PETreeWindow(application, RekallRuntime, open_file=False)
-    window.showMaximized()
-
-    select_process = SelectProcess(window)
+    window = pe_tree.window.PETreeWindow(application, RekallRuntime, {}, open_file=False)
 
     # Extend menu to include open process
+    select_process = SelectProcess(window)
+
     open_process_action = QtWidgets.QAction("Process", window)
     open_process_action.setShortcut("Ctrl+Shift+P")
     open_process_action.setStatusTip("Open process")

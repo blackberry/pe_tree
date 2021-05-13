@@ -20,6 +20,7 @@
 import sys
 import string
 from datetime import datetime
+import builtins
 
 try:
     from urllib import quote
@@ -28,14 +29,6 @@ except ImportError:
 
 # Qt imports
 from PyQt5 import QtCore, QtGui, QtWidgets
-
-# QDarkStyle
-try:
-    import qdarkstyle
-
-    HAVE_DARKSTYLE = True
-except:
-    HAVE_DARKSTYLE = False
 
 # PE Tree imports
 import pe_tree.form
@@ -71,7 +64,7 @@ class PEFileString():
 
         if isinstance(buffer[0], int):
             return "".join([chr(i) if (chr(i) in string.printable and chr(i) not in self.whitespace) else "\\x{0:02x}".format(i) for i in buffer])
-        
+
         return "".join([i if (i in string.printable and i not in self.whitespace) else "\\x{0:02x}".format(ord(i)) for i in buffer])
 
     def __str__(self):
@@ -200,6 +193,7 @@ class CommonStandardItem(QtGui.QStandardItem):
         actions.show_menu()
 
     def paint(self, painter, option, index):
+        """Paint callback to adjust between VA/RVA"""
         if self.valid_va and self.offset > 0:
             if self.offset >= self.tree.image_base or self.tree.show_rva:
                 self.setText("0x{:0{w}x}{}".format(self.offset, self.resolve(self.offset), w=self.width))
@@ -270,7 +264,7 @@ class RatioItem(CommonStandardItem):
 
         bar_width = width / 2
 
-        # Determine width per byte of filesize
+        # Determine width per byte of file size
         delta = float(bar_width - 1) / float(max(self.tree.size, self.offset + self.size))
 
         # Draw the inner ratio portion
@@ -326,7 +320,7 @@ class SaveablePEFileItem(PEFileItem):
             kwargs.update(filename=kwargs.get("name", ""))
 
         super(SaveablePEFileItem, self).__init__(tree, **kwargs)
-
+        
         self.setIcon(tree.form.widget.style().standardIcon(QtWidgets.QStyle.SP_DialogSaveButton))
 
     def context_menu(self, actions):
@@ -358,6 +352,20 @@ class InformationItem(CommonStandardItem):
         actions.actions.append(actions.copy_action)
 
         super(InformationItem, self).context_menu(actions)
+
+class MimeTypeItem(CommonStandardItem):
+    """Extended CommonStandardItem class for displaying MIME type information"""
+
+    def __init__(self, tree, **kwargs):
+        """Initialise super and store offset/size"""
+        super(MimeTypeItem, self).__init__(tree, **kwargs)
+
+        # Highlight executable MIME types bold/red
+        if kwargs.get("name", "") in ["application/x-msdownload", "application/vnd.microsoft.portable-executable"]:
+            font = self.font()
+            font.setBold(True)
+            self.setFont(font)
+            self.setForeground(QtGui.QColor("red"))
 
 class WarningItem(CommonStandardItem):
     """Extended CommonStandardItem class for displaying warnings"""
@@ -412,7 +420,7 @@ class HeaderItem(CommonStandardItem):
         if icon is not None:
             self.setIcon(tree.form.widget.style().standardIcon(getattr(QtWidgets.QStyle, icon)))
 
-        # # Bold/Cylance green
+        # Bold/Cylance green
         self.setForeground(QtGui.QColor("#69d03c"))
         font = self.font()
         font.setBold(True)
@@ -422,7 +430,7 @@ class HeaderItem(CommonStandardItem):
         """Item right clicked"""
         actions.actions.append(actions.expand_all_action)
 
-        if self.is_root:
+        if self.is_root and not self.tree.disable_dump:
             actions.actions.append(actions.save_dump_action)
 
         actions.actions.append(actions.copy_action)
@@ -444,7 +452,7 @@ class SaveableHeaderItem(HeaderItem):
 
         super(SaveableHeaderItem, self).__init__(tree, **kwargs)
 
-        self.setIcon(tree.form.widget.style().standardIcon(QtWidgets.QStyle.SP_DialogSaveButton))
+        #self.setIcon(tree.form.widget.style().standardIcon(QtWidgets.QStyle.SP_DialogSaveButton))
 
     def context_menu(self, actions):
         """Item right clicked"""
@@ -494,3 +502,23 @@ class EntropyItem(CommonStandardItem):
         actions.actions.append(actions.copy_action)
 
         super(EntropyItem, self).context_menu(actions)
+
+class HashableQStandardItem():
+    """Hashable QStandardItem wrapper for storing in a set()"""
+    def __init__(self, item):
+        self.item = item
+        self.args = item.data(QtCore.Qt.UserRole)
+
+    def __hash__(self):
+        """Filename is hash"""
+        return builtins.hash(self.args["filename"])
+
+    def __eq__(self, other):
+        """Test if items are equal"""
+        if not isinstance(other, type(self)):
+            return NotImplemented
+
+        return self.args["filename"] == other.item.data(QtCore.Qt.UserRole)["filename"]
+
+    def __ne__(self, other):
+        return not self.__eq__(other)

@@ -32,6 +32,9 @@ import pe_tree.info
 with open("requirements.txt") as f:
     install_requires = f.read().splitlines()
 
+    if sys.version_info >= (3, 0):
+        install_requires.extend(["filetype", "minidump"])
+
 INSTALL_FOR_IDA = False
 
 if "--ida" in sys.argv:
@@ -42,13 +45,18 @@ if "--ida" in sys.argv:
 
     INSTALL_FOR_IDA = True
 else:
-    # Setup for standalone application
-    entry_points = {"console_scripts": ["pe-tree=pe_tree.__main__:main"]}
+    # Setup for standalone application entry-points
+    entry_points = {"console_scripts": ["pe-tree=pe_tree.__main__:main", 
+                                        "pe-tree-vol=pe_tree.volatility:main", 
+                                        "pe-tree-ghidra=pe_tree.ghidra:main", 
+                                        "pe-tree-carve=pe_tree.carve:main", 
+                                        "pe-tree-minidump=pe_tree.minidump:main"]}
+
     install_requires.extend(["pyqt5", "capstone"])
 
 # Long description
 with open(os.path.join(os.path.abspath(os.path.dirname(__file__)), "README.md")) as f:
-    long_description = f.read()
+    long_description = "".join([l for l in f.readlines() if not l.startswith("!")])
 
 def find_ida():
     """Search for possible IDA Pro installations"""
@@ -113,7 +121,9 @@ setup(name="pe-tree",
                 "pedump",
                 "unpacker",
                 "iat",
-                "rekall"],
+                "rekall",
+                "volatility"
+                "minidump"],
       classifiers=[
           "Intended Audience :: Developers",
           "Intended Audience :: Science/Research",

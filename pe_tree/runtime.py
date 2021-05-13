@@ -20,6 +20,7 @@
 import os
 import tempfile
 import threading
+import struct
 
 # Config parser imports
 try:
@@ -44,6 +45,8 @@ except ImportError:
 # PE Tree imports
 import pe_tree.info
 
+# pylint: disable=unused-argument
+
 class RuntimeSignals(QtCore.QObject):
     """Allows worker threads to invoke runtime methods on the UI thread.
 
@@ -51,10 +54,10 @@ class RuntimeSignals(QtCore.QObject):
         This class must be instantiated from the UI thread!
 
     """
-    def __init__(self, runtime, opaque={}):
+    def __init__(self, runtime, opaque=None):
         super(RuntimeSignals, self).__init__()
 
-        self.opaque = opaque
+        self.opaque = opaque if opaque != None else {}
         self.runtime = runtime
 
     def invoke_method(self, method, *args):
@@ -84,8 +87,8 @@ class RuntimeSignals(QtCore.QObject):
     def read_pe(self, image_base, size=0):
         return self.invoke_method("read_pe", Qt.Q_ARG(object, image_base), Qt.Q_ARG(object, size))
 
-    def get_bytes(self, start, end):
-        return self.invoke_method("get_bytes", Qt.Q_ARG(object, start), Qt.Q_ARG(object, end))
+    def get_bytes(self, start, size):
+        return self.invoke_method("get_bytes", Qt.Q_ARG(object, start), Qt.Q_ARG(object, size))
 
     def get_byte(self, offset):
         return self.invoke_method("get_byte", Qt.Q_ARG(object, offset))
@@ -144,8 +147,11 @@ class RuntimeSignals(QtCore.QObject):
     def make_name(self, offset, name, flags=0):
         return self.invoke_method("make_name", Qt.Q_ARG(object, offset), Qt.Q_ARG(str, name), Qt.Q_ARG(int, flags))
 
-    def patch_iat_ptrs(self, pe, image_base, size, iat_ptrs, name_to_iat, get_word, set_word):
-        return self.invoke_method("patch_iat_ptrs", Qt.Q_ARG(object, pe), Qt.Q_ARG(object, image_base), Qt.Q_ARG(object, size), Qt.Q_ARG(object, iat_ptrs), Qt.Q_ARG(object, name_to_iat), Qt.Q_ARG(object, get_word), Qt.Q_ARG(object, set_word))
+    def find_iat_ptrs(self, pe, image_base, size, get_word):
+        return self.invoke_method("find_iat_ptrs", Qt.Q_ARG(object, pe), Qt.Q_ARG(object, image_base), Qt.Q_ARG(object, size), Qt.Q_ARG(object, get_word))
+
+    def find_pe(self, cursor=False):
+        return self.invoke_method("find_pe", Qt.Q_ARG(object, cursor))
 
     def init_capstone(self, pe):
         return self.invoke_method("init_capstone", Qt.Q_ARG(object, pe))
@@ -155,7 +161,7 @@ class RuntimeSignals(QtCore.QObject):
 
 class Runtime(QtCore.QObject):
     """Base runtime class"""
-    def __init__(self, widget):
+    def __init__(self, widget, args):
         super(Runtime, self).__init__()
 
         self.widget = widget
@@ -164,6 +170,7 @@ class Runtime(QtCore.QObject):
         self.config_lock = threading.RLock()
         self.signals = RuntimeSignals(self)
         self.opaque = {}
+        self.args = args
 
         self.read_config()
         self.save_config()
@@ -232,7 +239,7 @@ class Runtime(QtCore.QObject):
 
         return self.ret
 
-    @QtCore.pyqtSlot(int, int)
+    @QtCore.pyqtSlot(object, object)
     def read_pe(self, image_base, size=0):
         """Read PE image from memory
 
@@ -241,19 +248,37 @@ class Runtime(QtCore.QObject):
             size (int, optional): Size of PE file in-memory
 
         Returns:
-            bytearray: Data of PE image if successful, otherwise None
+            bytearray: Data of PE image if successful, otherwise an empty bytearray
 
         """
-        self.ret = None
+        self.ret = b""
+
+        try:
+            # Read the module's PE headers to determine the image size
+            pe = pefile.PE(data=self.get_bytes(image_base, 0x1000), fast_load=True)
+
+            # Read the remainder of the PE image
+            pe = pefile.PE(data=self.get_bytes(image_base, max(pe.OPTIONAL_HEADER.SizeOfImage, pe.sections[-1].PointerToRawData + pe.sections[-1].SizeOfRawData)), fast_load=True)
+
+            # Fix up section pointers/sizes
+            for section in pe.sections:
+                section.PointerToRawData = section.VirtualAddress
+                section.SizeOfRawData = section.Misc_VirtualSize + (pe.OPTIONAL_HEADER.SectionAlignment - (section.Misc_VirtualSize % pe.OPTIONAL_HEADER.SectionAlignment))
+
+            # Get PE data
+            self.ret = pe.write()
+        except:
+            pass
+
         return self.ret
 
     @QtCore.pyqtSlot(int, int)
-    def get_bytes(self, start, end):
+    def get_bytes(self, start, size):
         """Read a sequence of bytes from memory
 
         Args:
             start (int): Start address
-            end (int): End address
+            size (int): Number of byte to read
 
         Returns:
             int: Array of bytes if successful, otherwise None
@@ -273,7 +298,7 @@ class Runtime(QtCore.QObject):
             int: Byte value
 
         """
-        self.ret = 0
+        self.ret = self.get_bytes(offset, 1)
         return self.ret
 
     @QtCore.pyqtSlot(int)
@@ -287,7 +312,7 @@ class Runtime(QtCore.QObject):
             int: Word value
 
         """
-        self.ret = 0
+        self.ret = struct.unpack("<H", self.get_bytes(offset, 2))[0]
         return self.ret
 
     @QtCore.pyqtSlot(int)
@@ -301,7 +326,7 @@ class Runtime(QtCore.QObject):
             int: Dword value
 
         """
-        self.ret = 0
+        self.ret = struct.unpack("<I", self.get_bytes(offset, 4))[0]
         return self.ret
 
     @QtCore.pyqtSlot(int)
@@ -315,7 +340,7 @@ class Runtime(QtCore.QObject):
             int: Qword value
 
         """
-        self.ret = 0
+        self.ret = struct.unpack("<Q", self.get_bytes(offset, 8))[0]
         return self.ret
 
     @QtCore.pyqtSlot(int)
@@ -376,20 +401,36 @@ class Runtime(QtCore.QObject):
 
     @QtCore.pyqtSlot(object, int)
     def jumpto(self, item, offset):
-        """User double-clicked an item in the tree
+        """User double-clicked an item in the tree, by default disassemble using capstone
 
         Args:
             item (pe_tree.tree): Item that was double-clicked by the user
             offset (int): Address to jump to
 
         """
-        self.ret = None
+        try:
+            if item.tree.disasm:
+                for i in item.tree.disasm.disasm(item.get_data(size=0x100), offset):
+                    item.tree.form.runtime.log("0x{:x}:\t{}\t{}".format(i.address, i.mnemonic, i.op_str))
+        except ValueError:
+            pass
+
+        self.ret = True
         return self.ret
 
     @QtCore.pyqtSlot(str)
     def log(self, output):
         """Print to output"""
-        print(output)
+        output_view = self.pe_tree_form.output_stack.currentWidget()
+
+        if output_view:
+            self.pe_tree_form.output_stack.setVisible(True)
+            output_view.setVisible(True)
+            output_view.append(output)
+            output_view.moveCursor(QtGui.QTextCursor.End)
+
+        self.ret = True
+        return self.ret
 
     @QtCore.pyqtSlot(int, int)
     def make_string(self, offset, size):
@@ -509,7 +550,7 @@ class Runtime(QtCore.QObject):
 
     @QtCore.pyqtSlot(object, object, object, object)
     def find_iat_ptrs(self, pe, image_base, size, get_word):
-        """Find likely IAT pointers
+        """Find likely IAT pointers using capstone for disassembly
 
         Args:
             pe (pefile): Parsed PE file
@@ -519,6 +560,75 @@ class Runtime(QtCore.QObject):
 
         Returns:
             [(int, int, str, str)]: Tuple containing IAT offset, xref, module name and API name
+
+        """
+        # Initialise capstone
+        disasm = self.init_capstone(pe)
+        disasm.detail = True
+
+        iat_ptrs = []
+
+        # Traverse sections
+        for section in pe.sections:
+            # Is the section executable?
+            if not section.Characteristics & pefile.SECTION_CHARACTERISTICS["IMAGE_SCN_MEM_EXECUTE"]:
+                continue
+
+            # Does the section contain anything?
+            data = section.get_data()
+
+            if not data:
+                continue
+
+            # Disassemble section
+            for i in disasm.disasm(section.get_data(), image_base + section.VirtualAddress):
+                # Attempt to read the current instruction's effective memory address operand (if present)
+                ptr = 0
+
+                if i.mnemonic in ["call", "push", "jmp"]:
+                    if i.operands[0].type == capstone.x86.X86_OP_MEM:
+                        # Get memory offset for branch instructions
+                        ptr = i.operands[0].value.mem.disp
+                elif i.mnemonic in ["mov", "lea"]:
+                    if i.operands[0].type == capstone.x86.X86_OP_REG and i.operands[1].type == capstone.x86.X86_OP_MEM:
+                        # Get memory offset for mov/lea instructions
+                        ptr = i.operands[1].value.mem.disp
+
+                # Does the instruction's memory address operand seem somewhat valid?!
+                if ptr < 0x1000:
+                    continue
+
+                # Resolve pointer from memory operand
+                try:
+                    iat_offset = get_word(ptr)
+                except:
+                    continue
+
+                # Ignore offset if it is in our image
+                if image_base <= iat_offset <= image_base + size:
+                    continue
+
+                # Get module and API name for offset
+                module, api = self.resolve_address(iat_offset)
+
+                # Ignore the offset if it is in a debug segment or stack etc
+                if api and module and module.endswith(".dll"):
+                    if not iat_offset in iat_ptrs:
+                        # Add IAT offset, address to patch, module name and API name to list
+                        iat_ptrs.append((iat_offset, i.address + len(i.bytes) - 4, module, api))
+
+        self.ret = iat_ptrs
+        return self.ret
+
+    @QtCore.pyqtSlot(object)
+    def find_pe(self, cursor=None):
+        """Find MZ/PE headers in memory
+
+        Args:
+            cursor (bool): If True, search for MZ/PE at the current cursor position, otherwise scan the entire address space
+
+        Returns:
+            [(int, str, bool)]: Tuple containing MZ offset, section name and bool set to True if the image is 64-bit
 
         """
         self.ret = None
@@ -535,23 +645,30 @@ class Runtime(QtCore.QObject):
             [capstone.Cs]: Capstone disassembler or None if unavailable/not supported
 
         """
+        self.ret = None
+
         if HAVE_CAPSTONE:
             mt = pefile.MACHINE_TYPE
 
             if pe.FILE_HEADER.Machine == mt["IMAGE_FILE_MACHINE_I386"]:
-                return capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
-            elif pe.FILE_HEADER.Machine == mt["IMAGE_FILE_MACHINE_AMD64"]:
-                return capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
-            elif pe.FILE_HEADER.Machine == mt["IMAGE_FILE_MACHINE_ARM"]:
-                return capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_ARM)
-            elif pe.FILE_HEADER.Machine == mt["IMAGE_FILE_MACHINE_POWERPC"]:
-                return capstone.Cs(capstone.CS_ARCH_PPC, capstone.CS_MODE_LITTLE_ENDIAN)
-            elif pe.FILE_HEADER.Machine in [mt["IMAGE_FILE_MACHINE_THUMB"], mt["IMAGE_FILE_MACHINE_ARMNT"]]:
-                return capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB)
-            elif pe.FILE_HEADER.Machine in [mt["IMAGE_FILE_MACHINE_R3000"], mt["IMAGE_FILE_MACHINE_R4000"], mt["IMAGE_FILE_MACHINE_R10000"]]:
-                return capstone.Cs(capstone.CS_ARCH_MIPS, capstone.CS_MODE_MIPS32)
+                self.ret = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+            
+            if pe.FILE_HEADER.Machine == mt["IMAGE_FILE_MACHINE_AMD64"]:
+                self.ret = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
+            
+            if pe.FILE_HEADER.Machine == mt["IMAGE_FILE_MACHINE_ARM"]:
+                self.ret = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_ARM)
+            
+            if pe.FILE_HEADER.Machine == mt["IMAGE_FILE_MACHINE_POWERPC"]:
+                self.ret = capstone.Cs(capstone.CS_ARCH_PPC, capstone.CS_MODE_LITTLE_ENDIAN)
+            
+            if pe.FILE_HEADER.Machine in [mt["IMAGE_FILE_MACHINE_THUMB"], mt["IMAGE_FILE_MACHINE_ARMNT"]]:
+                self.ret = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB)
+            
+            if pe.FILE_HEADER.Machine in [mt["IMAGE_FILE_MACHINE_R3000"], mt["IMAGE_FILE_MACHINE_R4000"], mt["IMAGE_FILE_MACHINE_R10000"]]:
+                self.ret = capstone.Cs(capstone.CS_ARCH_MIPS, capstone.CS_MODE_MIPS32)
 
-        return None
+        return self.ret
 
     @QtCore.pyqtSlot(str, str, object)
     def get_config_option(self, section, option, fallback):
@@ -647,12 +764,9 @@ class Runtime(QtCore.QObject):
                 config.add_section("config")
                 self.set_default_config_option(config, "config", "debug", "False")
                 self.set_default_config_option(config, "config", "fonts", ",".join(["Consolas", "Monospace", "Courier"]))
+                self.set_default_config_option(config, "config", "passwords", ",".join(["", "infected"]))
                 self.set_default_config_option(config, "config", "virustotal_url", "https://www.virustotal.com/gui/search")
                 self.set_default_config_option(config, "config", "cyberchef_url", "https://gchq.github.io/CyberChef")
-
-                config.add_section("dump")
-                self.set_default_config_option(config, "dump", "enable", "True")
-                self.set_default_config_option(config, "dump", "recalculate_pe_checksum", "False")
 
                 config.write(config_file)
                 self.config = config

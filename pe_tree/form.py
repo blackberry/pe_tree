@@ -44,6 +44,22 @@ try:
 except ImportError:
     HAVE_REKALL = False
 
+# Ghidra imports
+try:
+    import ghidra_bridge # pylint: disable=unused-import
+
+    HAVE_GHIDRA = True
+except ImportError:
+    HAVE_GHIDRA = False
+
+# Volatility3 imports
+try:
+    import volatility3 # pylint: disable=unused-import
+
+    HAVE_VOLATILITY3 = True
+except ImportError:
+    HAVE_VOLATILITY3 = False
+
 # PE Tree imports
 import pe_tree.tree
 import pe_tree.map
@@ -88,7 +104,7 @@ class PETreeForm():
         # Create tree view and model
         self.treeview = QtWidgets.QTreeView()
         self.model = QtGui.QStandardItemModel(self.treeview)
-        self.model.setHorizontalHeaderLabels(["Item", "Value"])
+        self.model.setHorizontalHeaderLabels(["", ""])
 
         # Setup tree view
         self.treeview.setModel(self.model)
@@ -105,20 +121,7 @@ class PETreeForm():
         self.treeview.collapsed.connect(self.collapsed)
         self.treeview.selectionModel().selectionChanged.connect(self.selection_changed)
         self.treeview.setVisible(False)
-
-        if not HAVE_IDA:
-            self.treeview.setStyleSheet("""
-                QTreeView::item:selected {
-                }
-
-                QTreeView::item:hover {
-                    color: #ffffff;
-                    background-color: #69d03c;
-                }
-
-                QTreeView::item:hover:selected {
-                }
-            """)
+        self.treeview.header().hide()
 
         # Create stack of PE maps
         self.map_stack = QtWidgets.QStackedWidget()
@@ -132,6 +135,7 @@ class PETreeForm():
             self.output_stack = QtWidgets.QStackedWidget()
 
             right_pane.addWidget(self.output_stack)
+            self.output_stack.setVisible(False)
 
             right_pane.setOrientation(QtCore.Qt.Vertical)
             right_pane.setSizes([300, 100])
@@ -153,6 +157,7 @@ class PETreeForm():
 
         self.cancel_button = QtWidgets.QPushButton("Cancel", self.status_widget)
         self.cancel_button.setFixedHeight(25)
+        self.cancel_button.setFixedWidth(100)
         self.cancel_button.clicked.connect(self.cancel_clicked)
 
         status_layout.addWidget(self.cancel_button)
@@ -219,7 +224,7 @@ class PETreeForm():
             self.processpool.join()
 
     def cancel_clicked(self):
-        """Abort all map/scan dir threads"""
+        """Abort all map/scan threads"""
         # Wait for all threads/processes to complete
         self.wait_for_threads()
 
@@ -295,6 +300,12 @@ class PETreeForm():
         if hasattr(item.tree.form, "output_stack"):
             item.tree.form.output_stack.setCurrentIndex(item.tree.output_view_index)
 
+            # Hide the output stack if the current text edit is empty
+            if item.tree.form.output_stack.currentWidget().toPlainText() != "":
+                self.output_stack.setVisible(True)
+            else:
+                self.output_stack.setVisible(False)
+
     def expanded(self, index):
         """Update map view if tree node expanded
 
@@ -318,6 +329,10 @@ class PETreeForm():
 
         """
         self.set_map_view(self.model.itemFromIndex(index))
+
+        # Resize the column width to fit the content
+        self.treeview.resizeColumnToContents(0)
+        self.treeview.resizeColumnToContents(1)
 
     def row_clicked(self, index):
         """Display URL associated with item
@@ -388,6 +403,12 @@ class PETreeForm():
             if hasattr(form, "output_stack"):
                 item.tree.form.output_stack.setCurrentIndex(item.tree.output_view_index)
 
+                # Hide the output stack if the current text edit is empty
+                if item.tree.form.output_stack.currentWidget().toPlainText() != "":
+                    self.output_stack.setVisible(True)
+                else:
+                    self.output_stack.setVisible(False)
+
             return
 
     def expand_items(self, index):
@@ -419,7 +440,7 @@ class PETreeForm():
         self.status_label.setText("Processing {}".format(filename))
 
     def update_ui(self, tree):
-        """Add treeview and map widgets to the main form. Signaled via worker thread.
+        """Add tree-view and map widgets to the main form. Signaled via worker thread.
 
         Args:
             tree (pe_tree.tree.PETree): New PETree to add to the form view
@@ -458,7 +479,7 @@ class PETreeForm():
         tree.map = pe_tree.map.PEMap(tree.size)
         tree.map.file_size = tree.size
 
-        tree.map_scroll_area = QtWidgets.QScrollArea()
+        tree.map_scroll_area = pe_tree.map.PEMapScrollArea()
         tree.map_scroll_area.setWidgetResizable(True)
         tree.map_scroll_area.setAutoFillBackground(True)
         tree.map_scroll_area.setWidget(tree.map)
@@ -481,18 +502,19 @@ class PETreeForm():
         # Ensure the filename fits in the column
         self.treeview.resizeColumnToContents(0)
 
-    def map_pe(self, filename=None, image_base=0, data=None, priority=0, opaque=None):
+    def map_pe(self, filename=None, image_base=0, data=None, disable_dump=False, priority=0, opaque=None):
         """Starts a new thread to map PE from file/memory/data
 
         Args:
             filename (str, optional): Path to PE file to map
             image_base (int, optional): Image base of PE file to map
             data (bytes, optional): PE File data to map
+            disable_dump (bool): Disable dumping of the PE file
             priority (int, optional): QRunnable thread priority
             opaque (object): Opaque object pointer passed to runtime
 
         """
-        self.threadpool.start(pe_tree.tree.PETree(self, filename, image_base, data, opaque=opaque), priority)
+        self.threadpool.start(pe_tree.tree.PETree(self, filename, image_base, data, disable_dump=disable_dump, opaque=opaque), priority)
 
     def show(self):
         """Display the main form widget"""
