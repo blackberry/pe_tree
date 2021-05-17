@@ -33,10 +33,6 @@ import pefile
 # IDA imports
 try:
     import idaapi
-    import ida_idaapi
-    import idc
-    import idautils
-    import ida_bytes
 
     HAVE_IDA = True
 except ImportError:
@@ -48,7 +44,7 @@ from PyQt5 import QtWidgets, Qt
 # PE Tree imports
 import pe_tree.form
 import pe_tree.utils
-import pe_tree.dump_pe
+import pe_tree.dialogs
 
 class CommonStandardItemContextMenu():
     """Context menu actions for pe_tree.qstandarditems.CommonStandardItem
@@ -104,16 +100,8 @@ class CommonStandardItemContextMenu():
         self.toggle_debug_action = QtWidgets.QAction("Debug", form.widget)
         self.toggle_debug_action.setCheckable(True)
 
-        self.toggle_enable_dump_action = QtWidgets.QAction("Enable dump", form.widget)
-        self.toggle_enable_dump_action.setCheckable(True)
-
-        self.toggle_recalculate_pe_checksum_action = QtWidgets.QAction("Recalculate PE checksum", form.widget)
-        self.toggle_recalculate_pe_checksum_action.setCheckable(True)
-
         self.options_menu = QtWidgets.QMenu("Options")
         self.options_menu.addAction(self.toggle_debug_action)
-        self.options_menu.addAction(self.toggle_enable_dump_action)
-        self.options_menu.addAction(self.toggle_recalculate_pe_checksum_action)
 
         if not HAVE_IDA:
             self.options_menu.menuAction().setVisible(False)
@@ -132,8 +120,6 @@ class CommonStandardItemContextMenu():
         self.search_vt_action.triggered.connect(self.search_vt)
         self.cyberchef_action.triggered.connect(self.cyberchef)
         self.toggle_debug_action.triggered.connect(self.toggle_debug)
-        self.toggle_enable_dump_action.triggered.connect(self.toggle_enable_dump)
-        self.toggle_recalculate_pe_checksum_action.triggered.connect(self.toggle_recalculate_pe_checksum)
         self.rva_action.triggered.connect(self.toggle_rva)
         self.va_action.triggered.connect(self.toggle_va)
         self.about_action.triggered.connect(self.about_box)
@@ -185,8 +171,6 @@ class CommonStandardItemContextMenu():
 
         # Set config checkboxes
         self.toggle_debug_action.setChecked(self.form.runtime.get_config_option("config", "debug", False))
-        self.toggle_enable_dump_action.setChecked(self.form.runtime.get_config_option("config", "enable_dump", True))
-        self.toggle_recalculate_pe_checksum_action.setChecked(self.form.runtime.get_config_option("config", "recalculate_pe_checksum", False))
 
         # Set addressing checkboxes
         self.rva_action.setChecked(self.item.tree.show_rva)
@@ -232,14 +216,6 @@ class CommonStandardItemContextMenu():
         """Enable/disable debug config option"""
         self.toggle_option("config", "debug")
 
-    def toggle_enable_dump(self):
-        """Enable/disable enable_dump config option"""
-        self.toggle_option("dump", "enable")
-
-    def toggle_recalculate_pe_checksum(self):
-        """Enable/disable recalculate_pe_checksum config option"""
-        self.toggle_option("dump", "recalculate_pe_checksum")
-
     def toggle_rva(self):
         """Enable RVA addressing"""
         self.item.tree.show_rva = True
@@ -249,12 +225,9 @@ class CommonStandardItemContextMenu():
         self.item.tree.show_rva = False
 
     def save_dump(self):
-        """Find PE root item in list"""
-        for tree in self.form.tree_roots:
-            if self.item.text() == tree.filename:
-                if tree.org_data is not None:
-                    # The PE may have already been dumped, so use the original data
-                    pe_tree.dump_pe.DumpPEForm(pefile.PE(data=tree.org_data), tree.image_base, tree.size, "{}.dmp".format(tree.filename), tree.ptr_size, self.form).invoke()
+        """Dump/save PE"""
+        tree = self.item.tree
+        pe_tree.dialogs.DumpPEForm(pefile.PE(data=tree.org_data), tree.image_base, tree.size, tree.filename, tree.ptr_size, self.form).invoke()
 
     def expand_all(self):
         """Expand all nodes beneath the selected node"""
@@ -269,7 +242,14 @@ class CommonStandardItemContextMenu():
         """Remove PE file from tree"""
         tree = self.item.tree
         self.form.tree_roots.remove(tree)
+
+        widget = self.form.map_stack.currentWidget()
         self.form.map_stack.removeWidget(tree.map)
+        widget.deleteLater()
+
+        if self.form.map_stack.count() == 0:
+            self.form.map_stack.hide()
+
         if hasattr(self.form, "output_stack"):
             self.form.output_stack.removeWidget(tree.output_view)
 
@@ -292,50 +272,18 @@ class CommonStandardItemContextMenu():
 
     def search_idb(self):
         """Search IDB for possible MZ/PE headers"""
-        # Determine pointer display width
-        info = idaapi.get_inf_structure()
-        
-        if info.is_64bit():
-            width = 16
-        else:
-            width = 8
-
-        # Search all segments
-        for seg in idautils.Segments():
-            s = idc.get_segm_start(seg)
-            e = idc.get_segm_end(seg)
-            addr = s
-
-            while True:
-                # Find first byte of MZ header
-                addr = ida_bytes.find_byte(addr, e-addr, 0x4d, 0)
-
-                if addr == ida_idaapi.BADADDR or addr >= e:
-                    break
-
-                # Check for MZ magic
-                if ida_bytes.get_word(addr) == 0x5a4d:
-                    # Ensure the PE header is in the segment
-                    e_lfanew = ida_bytes.get_dword(addr + 0x3c)
-
-                    if addr + e_lfanew + 1 < e:
-                        # Check for PE magic
-                        if ida_bytes.get_word(addr + e_lfanew) == 0x4550:
-                            # Found possible MZ/PE file
-                            self.form.runtime.log("0x{:0{w}x} - {}".format(addr, idc.get_segm_name(s), w=width))
-
-                            self.form.map_pe(image_base=addr, filename="{} - 0x{:0{w}x}".format(idc.get_segm_name(s), addr, w=width))
-
-                # Resume search from next address
-                addr += 1
+        # Find all PE files in memory
+        for image_base, section_name, is_64 in self.item.tree.form.runtime.find_pe():
+            # Map PE file
+            self.form.runtime.log("0x{:0{w}x} - {}".format(image_base, section_name, w=16 if is_64 else 8))
+            self.form.map_pe(image_base=image_base, filename="{} - 0x{:0{w}x}".format(section_name, image_base, w=16 if is_64 else 8))
 
     def map_pe_from_cursor(self):
         """Map PE file from current cursor position"""
-        # Is the cursor on an MZ file?
-        current = idc.here()
-
-        if ida_bytes.get_word(current) == 0x5a4d:
-            self.form.map_pe(image_base=current, priority=1)
+        # Is the cursor on a PE file?
+        for image_base, section_name, is_64 in self.item.tree.form.runtime.find_pe(cursor=True):
+            # Map PE file
+            self.form.map_pe(image_base=image_base, filename="{} - 0x{:0{w}x}".format(section_name, image_base, w=16 if is_64 else 8), priority=1)
 
     def map_pe_from_file(self):
         """Prompt user to select a file and attempt to map"""

@@ -23,168 +23,8 @@ import struct
 # pefile
 import pefile
 
-# Qt imports
-from PyQt5 import QtWidgets
-
 # PE Tree imports
 import pe_tree.form
-
-class DumpPEForm(QtWidgets.QDialog):
-    """Display simple dialog for dumping PE files
-
-    Args:
-        pe (pefile.PE): Parsed PE file
-        image_base (int): Base address of PE file in-memory
-        size (int): Size of PE file in-memory
-        filename (str): Name of PE file/memory segment
-        ptr_size (int): Width of pointer in characters, 8 = 32-bit, 16 = 64-bit
-        form (pe_tree.form.PETreeForm): PE Tree main form
-        parent (QWidget, optional): Dialog parent widget
-
-    """
-    def __init__(self, pe, image_base, size, filename, ptr_size, form, parent=None):
-        super(DumpPEForm, self).__init__(parent)
-
-        self.pe = pe
-        self.size = size
-        self.image_base = image_base
-        self.filename = filename
-        self.form = form
-        self.runtime = form.runtime
-        self.ptr_size = ptr_size
-
-        self.iat_ptrs = []
-
-        self.setWindowTitle("Dump PE - {}".format(filename))
-
-        self.image_base_edit = QtWidgets.QLineEdit("{:0{w}x}".format(image_base, w=self.ptr_size))
-        self.image_base_edit.setInputMask("H" * self.ptr_size)
-        self.image_base_edit.setWhatsThis("New image-base for the dumped PE file")
-
-        self.entry_point_edit = QtWidgets.QLineEdit("{:0{w}x}".format(pe.OPTIONAL_HEADER.AddressOfEntryPoint, w=self.ptr_size))
-        self.entry_point_edit.setInputMask("H" * self.ptr_size)
-        self.entry_point_edit.setWhatsThis("New entry-point for the dumped PE file")
-
-        self.size_of_optional_header_edit = QtWidgets.QLineEdit("{:0{w}x}".format(pe.FILE_HEADER.SizeOfOptionalHeader, w=self.ptr_size))
-        self.size_of_optional_header_edit.setInputMask("H" * self.ptr_size)
-        self.size_of_optional_header_edit.setWhatsThis("FILE_HEADER.SizeOfOptionalHeader to use when parsing the PE file")
-
-        self.iat_rva_edit = QtWidgets.QLineEdit("{:0{w}x}".format(pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IAT"]].VirtualAddress, w=self.ptr_size))
-        self.iat_rva_edit.setInputMask("H" * self.ptr_size)
-        self.iat_rva_edit.setWhatsThis("RVA of IAT to rebuild imports from.")
-        self.iat_rva_edit.setDisabled(True)
-
-        self.iat_size_edit = QtWidgets.QLineEdit("{:0{w}x}".format(pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IAT"]].Size, w=self.ptr_size))
-        self.iat_size_edit.setInputMask("H" * self.ptr_size)
-        self.iat_size_edit.setWhatsThis("Size of IAT to rebuild imports from.")
-        self.iat_size_edit.setDisabled(True)
-
-        self.use_existing_imports_radio = QtWidgets.QRadioButton("Use existing imports:")
-        self.use_existing_imports_radio.setWhatsThis("Use existing IAT to rebuild imports")
-        self.use_existing_imports_radio.toggled.connect(self.toggle_iat_radios)
-
-        self.no_imports_radio = QtWidgets.QRadioButton("No imports")
-        self.no_imports_radio.setWhatsThis("Do not rebuild IAT")
-        self.no_imports_radio.toggled.connect(self.toggle_iat_radios)
-
-        self.rebuild_imports_radio = QtWidgets.QRadioButton("Rebuild imports")
-        self.rebuild_imports_radio.setWhatsThis("Scan PE for IAT pointers and rebuild IAT")
-        self.rebuild_imports_radio.toggled.connect(self.toggle_iat_radios)
-        self.rebuild_imports_radio.setChecked(True)
-
-        self.save_to_file_checkbox = QtWidgets.QCheckBox("Save to file")
-        self.save_to_file_checkbox.setWhatsThis("Save dumped PE file to disk")
-        self.save_to_file_checkbox.setChecked(True)
-
-        self.add_to_tree_checkbox = QtWidgets.QCheckBox("Add to PE Tree")
-        self.add_to_tree_checkbox.setWhatsThis("Add dumped PE file to tree.\n\nWarning! Addresses may be incorrect in current IDA context if image is rebased!")
-
-        button_box = QtWidgets.QDialogButtonBox()
-        button_box.addButton("Dump", QtWidgets.QDialogButtonBox.AcceptRole)
-        button_box.addButton("Cancel", QtWidgets.QDialogButtonBox.RejectRole)
-
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-
-        grid = QtWidgets.QGridLayout()
-        grid.setSpacing(10)
-
-        widgets = [
-            (QtWidgets.QLabel("ImageBase:"), self.image_base_edit),
-            (QtWidgets.QLabel("AddressOfEntryPoint:"), self.entry_point_edit),
-            (QtWidgets.QLabel("SizeOfOptionalHeader:"), self.size_of_optional_header_edit),
-            (self.no_imports_radio, QtWidgets.QWidget()),
-            (self.rebuild_imports_radio, QtWidgets.QWidget()),
-            (self.use_existing_imports_radio, QtWidgets.QWidget()),
-            (QtWidgets.QLabel("IAT:"), self.iat_rva_edit),
-            (QtWidgets.QLabel("IAT Size:"), self.iat_size_edit),
-            (QtWidgets.QLabel("Output:"), QtWidgets.QWidget()),
-            (self.save_to_file_checkbox, QtWidgets.QWidget()),
-            (self.add_to_tree_checkbox, QtWidgets.QWidget()),
-            (QtWidgets.QWidget(), button_box)
-            ]
-
-        for row, (left, right) in enumerate(widgets):
-            grid.addWidget(left, row, 0)
-            grid.addWidget(right, row, 1)
-
-        self.setLayout(grid)
-
-    def toggle_iat_radios(self):
-        """IAT radio button toggle"""
-        self.iat_rva_edit.setEnabled(self.use_existing_imports_radio.isChecked())
-        self.iat_size_edit.setEnabled(self.use_existing_imports_radio.isChecked())
-
-    def invoke(self):
-        """Display the dump PE dialog"""
-        # Has the user accepted, i.e. pressed "Dump"?
-        if self.exec_() != 0:
-            # Read values from edit controls
-            image_base = int(self.image_base_edit.text(), 16)
-            entry_point = int(self.entry_point_edit.text(), 16)
-            size_of_optional_header = int(self.size_of_optional_header_edit.text(), 16)
-
-            # Determine what the user wants to do about IAT reconstruction
-            find_patch_iat = False
-
-            if self.rebuild_imports_radio.isChecked():
-                # Scan/rebuild IAT
-                find_patch_iat = True
-
-            iat_rva = 0
-            iat_size = 0
-
-            if self.use_existing_imports_radio.isChecked():
-                # Use existing IAT
-                iat_rva = int(self.iat_rva_edit.text(), 16)
-                iat_size = int(self.iat_size_edit.text(), 16)
-
-            # Dump the PE file
-            pe_data = DumpPEFile(self.pe,
-                                 self.image_base,
-                                 self.size,
-                                 self.runtime,
-                                 find_iat_ptrs=find_patch_iat,
-                                 patch_iat_ptrs=find_patch_iat,
-                                 iat_rva=iat_rva,
-                                 iat_size=iat_size,
-                                 new_image_base=image_base,
-                                 new_ep=entry_point,
-                                 recalculate_pe_checksum=self.runtime.get_config_option("dump", "recalculate_pe_checksum", False),
-                                 size_of_optional_header=size_of_optional_header).dump()
-
-            # Add to tree
-            if self.add_to_tree_checkbox.isChecked():
-                self.form.map_pe(image_base=image_base, data=pe_data, priority=1, filename=self.filename, opaque=self.runtime.opaque)
-
-            # Save to file
-            if self.save_to_file_checkbox.isChecked():
-                filename = self.runtime.ask_file("{}.dmp".format(self.filename), "Save dump", save=True)
-                if filename:
-                    with open(filename, "wb") as ofile:
-                        ofile.write(pe_data)
-
-            self.close()
 
 class DumpPEFile():
     """Dump PE file from memory and optionally rebuild imports.
@@ -202,6 +42,7 @@ class DumpPEFile():
         size (int): Size of PE file in-memory
         runtime (pe_tree.runtime.RuntimeSignals): Runtime callbacks
         find_iat_ptrs (bool, optional): Scan in-memory PE for IAT references (no need for iat_ptrs or iat_rva arguments)
+        keep_iat_ptrs (bool, optional): Keep existing IAT/IDT
         iat_ptrs ([(int, int, str, str)], optional): Specify IAT pointers using tuple containing IAT offset, xref, module name and API name
         iat_rva (int, optional): Specify address of the import address table (iat_size must be > 0)
         iat_size (int, optional): Specify size of the import address table (iat_rva must be != 0)
@@ -225,6 +66,7 @@ class DumpPEFile():
         self.iat_rva = kwargs.get("iat_rva", 0)
         self.iat_size = kwargs.get("iat_size", 0)
         self.find_iat_ptrs = kwargs.get("find_iat_ptrs", False)
+        self.keep_iat_ptrs = kwargs.get("keep_iat_ptrs", False)
         self.patch_iat_ptrs = kwargs.get("patch_iat_ptrs", False)
         self.new_image_base = kwargs.get("new_image_base", 0)
         self.new_ep = kwargs.get("new_ep", 0)
@@ -257,7 +99,7 @@ class DumpPEFile():
 
         # Fix section pointers and sizes
         for section in pe.sections:
-            if pe_tree.form.HAVE_IDA:
+            if pe_tree.form.HAVE_IDA or pe_tree.form.HAVE_GHIDRA:
                 section.PointerToRawData = section.VirtualAddress
                 section.SizeOfRawData = section.Misc_VirtualSize
 
@@ -275,7 +117,7 @@ class DumpPEFile():
             self.iat_ptrs = self.runtime.find_iat_ptrs(pe, self.image_base, self.size, self.get_word)
 
         # Found anything?
-        if len(self.iat_ptrs) == 0:
+        if len(self.iat_ptrs) == 0 and not self.keep_iat_ptrs:
             # Attempt to use existing IAT if specified/present
             iat_rva = self.iat_rva
             iat_size = self.iat_size
@@ -446,11 +288,12 @@ class DumpPEFile():
             pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IAT"]].VirtualAddress = iat_base
             pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IAT"]].Size = len(iat_data)
         else:
-            pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]].VirtualAddress = 0
-            pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]].Size = 0
+            if not self.keep_iat_ptrs:
+                pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]].VirtualAddress = 0
+                pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]].Size = 0
 
-            pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IAT"]].VirtualAddress = 0
-            pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IAT"]].Size = 0
+                pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IAT"]].VirtualAddress = 0
+                pe.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IAT"]].Size = 0
 
         # Update image base and entry-point
         if self.new_image_base != 0:
