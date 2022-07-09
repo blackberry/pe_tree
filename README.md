@@ -226,7 +226,7 @@ $ pip install qdarkstyle
 ### Features
 * Easy navigation of PE file structures
 * Double-click on a memory address in PE Tree to view in *IDA-view* or *hex-view*
-* Search an IDB for in-memory PE images and;
+* Search an IDB for in-memory PE images and:
     * Reconstruct imports (IAT + IDT)
     * Dump reconstructed PE files
     * Automatically comment PE file structures in IDB
@@ -328,7 +328,7 @@ Using the above approach it is possible to dump many in-memory PE files that hav
 
 ### Features
 * Operates against a Windows memory dump or a live system 
-* View, dump and reconstruct PE modules from;
+* View, dump and reconstruct PE modules from:
     * Active processes and DLLs
     * Loaded kernel-mode drivers
 
@@ -364,7 +364,7 @@ $rekall -f memory.vmem
 
 ### Features
 * Operates against a Windows memory dump
-* View, dump and reconstruct PE modules from;
+* View, dump and reconstruct PE modules from:
     * Active processes and DLLs
     * Loaded kernel-mode drivers
 
